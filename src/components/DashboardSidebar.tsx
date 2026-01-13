@@ -1,5 +1,5 @@
 import React from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   Phone,
   Target,
@@ -23,13 +23,13 @@ import {
   LayoutDashboard,
   ChevronDown,
   PanelLeftClose,
-  ToggleLeft,
-  ToggleRight,
   Radio,
   Rocket,
   AlertCircle,
   DollarSign,
   Users,
+  Lock,
+  Crown,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -51,22 +51,22 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
-import { useSimpleMode } from '@/hooks/useSimpleMode';
+import { useFeatureFlags, FeatureKey } from '@/hooks/useFeatureFlags';
 import { Badge } from '@/components/ui/badge';
 
 interface NavItem {
   title: string;
   value: string;
   icon: React.ElementType;
-  simpleMode?: boolean; // If true, show in simple mode
-  route?: string; // If set, navigates to this route instead of setting tab
+  requiredFeature?: FeatureKey;
+  alwaysShow?: boolean;
+  route?: string;
 }
 
 interface NavGroup {
   label: string;
   items: NavItem[];
   defaultOpen?: boolean;
-  simpleModeLabel?: string; // Alternative label for simple mode
 }
 
 const navigationGroups: NavGroup[] = [
@@ -74,87 +74,70 @@ const navigationGroups: NavGroup[] = [
     label: 'Overview',
     defaultOpen: true,
     items: [
-      { title: 'Dashboard', value: 'overview', icon: LayoutDashboard, simpleMode: true },
-      { title: 'Setup Wizard', value: 'onboarding', icon: Rocket, simpleMode: true },
-      { title: 'AI Setup', value: 'ai-setup', icon: Sparkles, simpleMode: true },
+      { title: 'Dashboard', value: 'overview', icon: LayoutDashboard, alwaysShow: true },
+      { title: 'Setup Wizard', value: 'onboarding', icon: Rocket, alwaysShow: true },
     ],
   },
   {
-    label: 'Phone & Dialing',
-    simpleModeLabel: 'Calling',
+    label: 'Calling',
     defaultOpen: true,
     items: [
-      { title: 'Voice Broadcast', value: 'broadcast', icon: Radio, simpleMode: true },
-      { title: 'AI Campaigns', value: 'predictive', icon: Target, simpleMode: true },
-      { title: 'Number Rotation', value: 'rotation', icon: RotateCw },
-      { title: 'Spam Detection', value: 'spam', icon: Shield },
-      { title: 'SMS Messaging', value: 'sms', icon: MessageSquare, simpleMode: true },
+      { title: 'Voice Broadcast', value: 'broadcast', icon: Radio, requiredFeature: 'voice_broadcast' },
+      { title: 'SMS Messaging', value: 'sms', icon: MessageSquare, requiredFeature: 'voice_broadcast' },
+      { title: 'AI Campaigns', value: 'predictive', icon: Target, requiredFeature: 'predictive_pacing' },
+      { title: 'Retell AI', value: 'retell', icon: Bot, requiredFeature: 'retell_integration' },
+      { title: 'Number Rotation', value: 'rotation', icon: RotateCw, requiredFeature: 'pipeline_sync' },
+      { title: 'Spam Detection', value: 'spam', icon: Shield, requiredFeature: 'pipeline_sync' },
     ],
   },
   {
     label: 'Leads & Pipeline',
     defaultOpen: false,
     items: [
-      { title: 'Leads', value: 'leads', icon: Users, simpleMode: true },
-      { title: 'Pipeline', value: 'pipeline', icon: Workflow },
-      { title: 'Lead Upload', value: 'lead-upload', icon: Upload },
-      { title: 'Appointments', value: 'calendar', icon: Calendar, simpleMode: true },
-      { title: 'Dispositions', value: 'dispositions', icon: Zap },
-      { title: 'Follow-ups', value: 'follow-ups', icon: Clock },
+      { title: 'Leads', value: 'leads', icon: Users, alwaysShow: true },
+      { title: 'Lead Upload', value: 'lead-upload', icon: Upload, alwaysShow: true },
+      { title: 'Pipeline', value: 'pipeline', icon: Workflow, requiredFeature: 'pipeline_sync' },
+      { title: 'Appointments', value: 'calendar', icon: Calendar, requiredFeature: 'callback_scheduling' },
+      { title: 'Dispositions', value: 'dispositions', icon: Zap, requiredFeature: 'disposition_automation' },
+      { title: 'Follow-ups', value: 'follow-ups', icon: Clock, requiredFeature: 'callback_scheduling' },
     ],
   },
   {
     label: 'AI & Automation',
     defaultOpen: false,
     items: [
-      { title: 'Autonomous Agent', value: 'autonomous-agent', icon: Brain, simpleMode: true },
-      { title: 'Retell AI', value: 'retell', icon: Settings },
-      { title: 'Workflows', value: 'workflows', icon: Zap },
-      { title: 'AI Engine', value: 'ai-engine', icon: Brain },
-      { title: 'Automation', value: 'automation', icon: Calendar },
-      { title: 'AI Manager', value: 'ai-manager', icon: Brain },
-      { title: 'Agent Activity', value: 'agent-activity', icon: Bot },
-      { title: 'AI Workflows', value: 'ai-workflows', icon: Sparkles },
-      { title: 'Reachability', value: 'reachability', icon: TrendingUp },
-      { title: 'AI Error Handler', value: 'ai-errors', icon: AlertCircle },
+      { title: 'Workflows', value: 'workflows', icon: Workflow, requiredFeature: 'workflow_triggers' },
+      { title: 'AI Engine', value: 'ai-engine', icon: Brain, requiredFeature: 'ai_dialing' },
+      { title: 'AI Workflows', value: 'ai-workflows', icon: Sparkles, requiredFeature: 'ai_dialing' },
+      { title: 'Automation', value: 'automation', icon: Zap, requiredFeature: 'workflow_triggers' },
+      { title: 'AI Manager', value: 'ai-manager', icon: Brain, requiredFeature: 'ai_pipeline_manager' },
+      { title: 'Autonomous Agent', value: 'autonomous-agent', icon: Brain, requiredFeature: 'autonomous_mode' },
+      { title: 'Agent Activity', value: 'agent-activity', icon: Bot, requiredFeature: 'ai_dialing' },
+      { title: 'Reachability', value: 'reachability', icon: TrendingUp, requiredFeature: 'transcript_analysis' },
+      { title: 'AI Error Handler', value: 'ai-errors', icon: AlertCircle, requiredFeature: 'ai_dialing' },
     ],
   },
   {
-    label: 'Reports & Analytics',
-    simpleModeLabel: 'Results',
+    label: 'Reports',
     defaultOpen: false,
     items: [
-      { title: 'Campaign Results', value: 'campaign-results', icon: BarChart3, simpleMode: true },
-      { title: 'Call Analytics', value: 'analytics', icon: BarChart3 },
-      { title: 'Daily Reports', value: 'reports', icon: FileText },
-      { title: 'Live Monitor', value: 'live-monitor', icon: Activity },
-      { title: 'A/B Testing', value: 'ab-testing', icon: Beaker },
-      { title: 'Budget Manager', value: 'budget', icon: DollarSign },
+      { title: 'Campaign Results', value: 'campaign-results', icon: BarChart3, alwaysShow: true },
+      { title: 'Call Analytics', value: 'analytics', icon: BarChart3, alwaysShow: true },
+      { title: 'Daily Reports', value: 'reports', icon: FileText, alwaysShow: true },
+      { title: 'Live Monitor', value: 'live-monitor', icon: Activity, requiredFeature: 'pipeline_sync' },
+      { title: 'A/B Testing', value: 'ab-testing', icon: Beaker, requiredFeature: 'ai_dialing' },
+      { title: 'Budget Manager', value: 'budget', icon: DollarSign, alwaysShow: true },
     ],
   },
   {
-    label: 'System & Settings',
+    label: 'Settings',
     defaultOpen: false,
     items: [
-      { title: 'System Testing', value: 'system-testing', icon: Beaker, simpleMode: true, route: '/system-testing' },
-      { title: 'System Health', value: 'health', icon: Activity },
-      { title: 'Settings', value: 'settings', icon: Settings },
+      { title: 'Settings', value: 'settings', icon: Settings, alwaysShow: true, route: '/settings' },
+      { title: 'System Testing', value: 'system-testing', icon: Beaker, alwaysShow: true, route: '/system-testing' },
     ],
   },
 ];
-
-// Filter navigation for simple mode
-const getFilteredNavigation = (isSimpleMode: boolean): NavGroup[] => {
-  if (!isSimpleMode) return navigationGroups;
-  
-  return navigationGroups
-    .map(group => ({
-      ...group,
-      label: group.simpleModeLabel || group.label,
-      items: group.items.filter(item => item.simpleMode),
-    }))
-    .filter(group => group.items.length > 0);
-};
 
 interface DashboardSidebarProps {
   activeTab: string;
@@ -163,15 +146,39 @@ interface DashboardSidebarProps {
 
 const DashboardSidebar = ({ activeTab, onTabChange }: DashboardSidebarProps) => {
   const { toggleSidebar } = useSidebar();
-  const { isSimpleMode, toggleMode } = useSimpleMode();
+  const { hasFeature, tierInfo, currentTier } = useFeatureFlags();
   const navigate = useNavigate();
-  
-  const filteredNavigation = getFilteredNavigation(isSimpleMode);
+
+  const getFilteredNavigation = (): NavGroup[] => {
+    return navigationGroups
+      .map(group => ({
+        ...group,
+        items: group.items.filter(item => {
+          if (item.alwaysShow) return true;
+          if (item.requiredFeature) return hasFeature(item.requiredFeature);
+          return true;
+        }),
+      }))
+      .filter(group => group.items.length > 0);
+  };
+
+  const filteredNavigation = getFilteredNavigation();
 
   const handleNavigate = (route: string) => {
     navigate(route);
     if (window.innerWidth < 768) {
       toggleSidebar();
+    }
+  };
+
+  const handleItemClick = (item: NavItem) => {
+    if (item.route) {
+      handleNavigate(item.route);
+    } else {
+      onTabChange(item.value);
+      if (window.innerWidth < 768) {
+        toggleSidebar();
+      }
     }
   };
 
@@ -181,7 +188,7 @@ const DashboardSidebar = ({ activeTab, onTabChange }: DashboardSidebarProps) => 
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <Phone className="h-5 w-5 text-primary shrink-0" />
-            <span className="font-semibold text-sm truncate">Smart Dialer</span>
+            <span className="font-semibold text-sm truncate">GHL Buddy</span>
           </div>
           <Button
             variant="ghost"
@@ -192,26 +199,16 @@ const DashboardSidebar = ({ activeTab, onTabChange }: DashboardSidebarProps) => 
             <PanelLeftClose className="h-4 w-4" />
           </Button>
         </div>
-        
-        {/* Mode Toggle */}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={toggleMode}
-          className="w-full mt-2 justify-between h-8 text-xs"
-        >
-          <span className="flex items-center gap-2">
-            {isSimpleMode ? (
-              <ToggleLeft className="h-4 w-4 text-primary" />
-            ) : (
-              <ToggleRight className="h-4 w-4 text-primary" />
-            )}
-            {isSimpleMode ? 'Simple Mode' : 'Full Mode'}
-          </span>
-          <Badge variant="outline" className="text-[10px] h-5">
-            {isSimpleMode ? '5 tabs' : '20+ tabs'}
+
+        <div className="mt-2 px-1">
+          <Badge
+            variant={currentTier === 'free' ? 'secondary' : 'default'}
+            className="w-full justify-center gap-1 py-1"
+          >
+            <Crown className="h-3 w-3" />
+            {tierInfo.name}
           </Badge>
-        </Button>
+        </div>
       </SidebarHeader>
 
       <SidebarContent className="px-2">
@@ -220,29 +217,24 @@ const DashboardSidebar = ({ activeTab, onTabChange }: DashboardSidebarProps) => 
             key={group.label}
             group={group}
             activeTab={activeTab}
-            onTabChange={(tab) => {
-              onTabChange(tab);
-              // Auto-close sidebar on mobile after selection
-              if (window.innerWidth < 768) {
-                toggleSidebar();
-              }
-            }}
-            onNavigate={handleNavigate}
+            onItemClick={handleItemClick}
           />
         ))}
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border p-3">
-        <div className="space-y-2">
-          {isSimpleMode && (
-            <p className="text-xs text-muted-foreground text-center">
-              Need more features? Switch to <button onClick={toggleMode} className="text-primary hover:underline">Full Mode</button>
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground text-center hidden sm:block">
-            Press <kbd className="px-1 py-0.5 bg-muted rounded text-xs">⌘B</kbd> to toggle
-          </p>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full gap-2 justify-center"
+          onClick={() => handleNavigate('/features')}
+        >
+          <Lock className="h-4 w-4" />
+          Explore Features
+        </Button>
+        <p className="text-xs text-muted-foreground text-center mt-2">
+          Unlock more with upgrades
+        </p>
       </SidebarFooter>
     </Sidebar>
   );
@@ -251,15 +243,13 @@ const DashboardSidebar = ({ activeTab, onTabChange }: DashboardSidebarProps) => 
 interface NavGroupCollapsibleProps {
   group: NavGroup;
   activeTab: string;
-  onTabChange: (tab: string) => void;
-  onNavigate: (route: string) => void;
+  onItemClick: (item: NavItem) => void;
 }
 
 const NavGroupCollapsible = ({
   group,
   activeTab,
-  onTabChange,
-  onNavigate,
+  onItemClick,
 }: NavGroupCollapsibleProps) => {
   const hasActiveItem = group.items.some((item) => item.value === activeTab);
   const [isOpen, setIsOpen] = React.useState(group.defaultOpen || hasActiveItem);
@@ -267,14 +257,6 @@ const NavGroupCollapsible = ({
   React.useEffect(() => {
     if (hasActiveItem) setIsOpen(true);
   }, [hasActiveItem]);
-
-  const handleItemClick = (item: NavItem) => {
-    if (item.route) {
-      onNavigate(item.route);
-    } else {
-      onTabChange(item.value);
-    }
-  };
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group/collapsible">
@@ -296,7 +278,7 @@ const NavGroupCollapsible = ({
               {group.items.map((item) => (
                 <SidebarMenuItem key={item.value}>
                   <SidebarMenuButton
-                    onClick={() => handleItemClick(item)}
+                    onClick={() => onItemClick(item)}
                     isActive={activeTab === item.value}
                     className={cn(
                       'touch-manipulation',
