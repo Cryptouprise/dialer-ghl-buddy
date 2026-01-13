@@ -29,6 +29,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { CallSimulator } from '@/components/CallSimulator';
 import { RateLimitingSettings } from '@/components/RateLimitingSettings';
 import DemoModeToggle from '@/components/DemoModeToggle';
+import SubscriptionManager from '@/components/SubscriptionManager';
+import { Crown } from 'lucide-react';
 
 const Settings = () => {
   const [autoQuarantine, setAutoQuarantine] = useState(true);
@@ -227,6 +229,7 @@ const Settings = () => {
         {/* Lead Scoring Configuration */}
         <LeadScoringSettings />
 
+        {/* Subscription & Feature Tiers */}        <Card>          <CardHeader>            <CardTitle className="flex items-center gap-2">              <Crown className="h-5 w-5" />              Subscription & Features            </CardTitle>            <CardDescription>Manage your subscription and feature access</CardDescription>          </CardHeader>          <CardContent>            <SubscriptionManager />          </CardContent>        </Card>
         {/* Calendar Integration */}
         <CalendarIntegrationManager />
 
