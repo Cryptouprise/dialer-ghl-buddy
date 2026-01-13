@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,10 +7,7 @@ import {
   Check,
   Lock,
   Crown,
-  Zap,
-  Rocket,
   Phone,
-  Users,
   GitBranch,
   Bot,
   Brain,
@@ -18,10 +15,8 @@ import {
   ArrowLeft,
   Sparkles,
   Radio,
-  Calendar,
-  MessageSquare,
-  Target,
-  TrendingUp,
+  Loader2,
+  ArrowDown,
 } from 'lucide-react';
 import {
   useFeatureFlags,
@@ -30,6 +25,8 @@ import {
   FEATURE_INFO,
   FeatureKey,
 } from '@/hooks/useFeatureFlags';
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
 
 // Feature categories with icons
 const FEATURE_CATEGORIES = [
@@ -90,9 +87,225 @@ const FEATURE_CATEGORIES = [
   },
 ];
 
+// Tier feature flags mapping
+const TIER_FLAGS: Record<TierName, Record<string, boolean>> = {
+  free: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+  },
+  tier1: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+  },
+  tier2: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+    pipeline_sync: true,
+    disposition_automation: true,
+    callback_scheduling: true,
+    workflow_triggers: true,
+  },
+  tier3: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+    pipeline_sync: true,
+    disposition_automation: true,
+    callback_scheduling: true,
+    workflow_triggers: true,
+    ai_dialing: true,
+    retell_integration: true,
+    transcript_analysis: true,
+    predictive_pacing: true,
+  },
+  tier4: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+    pipeline_sync: true,
+    disposition_automation: true,
+    callback_scheduling: true,
+    workflow_triggers: true,
+    ai_dialing: true,
+    retell_integration: true,
+    transcript_analysis: true,
+    predictive_pacing: true,
+    autonomous_mode: true,
+    ai_pipeline_manager: true,
+    self_learning: true,
+    script_optimization: true,
+  },
+  tier5: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+    pipeline_sync: true,
+    disposition_automation: true,
+    callback_scheduling: true,
+    workflow_triggers: true,
+    ai_dialing: true,
+    retell_integration: true,
+    transcript_analysis: true,
+    predictive_pacing: true,
+    autonomous_mode: true,
+    ai_pipeline_manager: true,
+    self_learning: true,
+    script_optimization: true,
+    multi_carrier: true,
+    custom_dashboard: true,
+    api_access: true,
+  },
+  enterprise: {
+    voice_broadcast: true,
+    ghl_contact_import: true,
+    ghl_basic_tagging: true,
+    pipeline_sync: true,
+    disposition_automation: true,
+    callback_scheduling: true,
+    workflow_triggers: true,
+    ai_dialing: true,
+    retell_integration: true,
+    transcript_analysis: true,
+    predictive_pacing: true,
+    autonomous_mode: true,
+    ai_pipeline_manager: true,
+    self_learning: true,
+    script_optimization: true,
+    multi_carrier: true,
+    custom_dashboard: true,
+    white_label: true,
+    api_access: true,
+  },
+};
+
 const Features: React.FC = () => {
   const navigate = useNavigate();
-  const { hasFeature, hasTier, currentTier, tierInfo } = useFeatureFlags();
+  const { hasFeature, hasTier, currentTier, tierInfo, refresh } = useFeatureFlags();
+  const { toast } = useToast();
+  const [upgradingTier, setUpgradingTier] = useState<TierName | null>(null);
+
+  const handleUpgrade = async (tier: TierName, tierName: string) => {
+    setUpgradingTier(tier);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast({
+          title: 'Error',
+          description: 'You must be logged in to upgrade',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Get the flags for this tier
+      const flags = TIER_FLAGS[tier];
+
+      // Update the user's feature flags
+      const { error } = await supabase
+        .from('user_feature_flags')
+        .update({
+          current_tier: tier,
+          subscription_status: 'active',
+          ...flags,
+          // Reset any features not in this tier
+          autonomous_mode: flags.autonomous_mode || false,
+          ai_pipeline_manager: flags.ai_pipeline_manager || false,
+          self_learning: flags.self_learning || false,
+          script_optimization: flags.script_optimization || false,
+          multi_carrier: flags.multi_carrier || false,
+          custom_dashboard: flags.custom_dashboard || false,
+          white_label: flags.white_label || false,
+          api_access: flags.api_access || false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+
+      // Refresh the feature flags
+      await refresh();
+
+      toast({
+        title: 'Upgraded!',
+        description: `You now have access to ${tierName} features`,
+      });
+
+      // Navigate back to dashboard to see new features
+      setTimeout(() => navigate('/'), 1000);
+
+    } catch (error) {
+      console.error('Upgrade error:', error);
+      toast({
+        title: 'Upgrade Failed',
+        description: 'There was an error upgrading your account',
+        variant: 'destructive',
+      });
+    } finally {
+      setUpgradingTier(null);
+    }
+  };
+
+  const handleDowngrade = async () => {
+    setUpgradingTier('free');
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { error } = await supabase
+        .from('user_feature_flags')
+        .update({
+          current_tier: 'free',
+          subscription_status: 'inactive',
+          voice_broadcast: true,
+          ghl_contact_import: true,
+          ghl_basic_tagging: true,
+          pipeline_sync: false,
+          disposition_automation: false,
+          callback_scheduling: false,
+          workflow_triggers: false,
+          ai_dialing: false,
+          retell_integration: false,
+          transcript_analysis: false,
+          predictive_pacing: false,
+          autonomous_mode: false,
+          ai_pipeline_manager: false,
+          self_learning: false,
+          script_optimization: false,
+          multi_carrier: false,
+          custom_dashboard: false,
+          white_label: false,
+          api_access: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+
+      await refresh();
+
+      toast({
+        title: 'Downgraded',
+        description: 'You are now on the Free Trial',
+      });
+
+      setTimeout(() => navigate('/'), 1000);
+
+    } catch (error) {
+      console.error('Downgrade error:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to downgrade',
+        variant: 'destructive',
+      });
+    } finally {
+      setUpgradingTier(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/30">
@@ -131,8 +344,25 @@ const Features: React.FC = () => {
                   You have access to {tierInfo.features.length} features
                 </p>
               </div>
-              <div className="text-right">
+              <div className="text-right flex items-center gap-3">
                 <div className="text-2xl font-bold">{tierInfo.price}</div>
+                {currentTier !== 'free' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDowngrade}
+                    disabled={upgradingTier !== null}
+                  >
+                    {upgradingTier === 'free' ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        <ArrowDown className="h-4 w-4 mr-1" />
+                        Reset to Free
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
             </div>
           </CardContent>
@@ -144,6 +374,7 @@ const Features: React.FC = () => {
             const CategoryIcon = category.icon;
             const isUnlocked = hasTier(category.tier);
             const isCurrentTier = currentTier === category.tier;
+            const isUpgrading = upgradingTier === category.tier;
 
             return (
               <Card
@@ -221,9 +452,23 @@ const Features: React.FC = () => {
 
                   {!isUnlocked && (
                     <div className="mt-4 pt-4 border-t">
-                      <Button className="w-full sm:w-auto" size="lg">
-                        <Sparkles className="h-4 w-4 mr-2" />
-                        Upgrade to {category.name}
+                      <Button
+                        className="w-full sm:w-auto"
+                        size="lg"
+                        onClick={() => handleUpgrade(category.tier, category.name)}
+                        disabled={upgradingTier !== null}
+                      >
+                        {isUpgrading ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Upgrading...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-4 w-4 mr-2" />
+                            Upgrade to {category.name}
+                          </>
+                        )}
                       </Button>
                     </div>
                   )}
