@@ -1,0 +1,659 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+// Dispositions that should trigger full DNC (block all future calls)
+const DNC_DISPOSITIONS = [
+  'dnc', 'do_not_call', 'stop', 'remove',
+  'threatening', 'rude', 'hostile', 'abusive'
+];
+
+// Dispositions that should remove from all active campaigns/workflows
+// Includes BOTH negative outcomes AND positive terminal outcomes (appointment, callback, etc.)
+const REMOVE_ALL_DISPOSITIONS = [
+  // Negative outcomes - stop calling, they're not interested
+  'not_interested', 'wrong_number', 'already_has_solar', 'already_has_service',
+  'deceased', 'business_closed', 'invalid_number', 'disconnected',
+  // Renters/non-homeowners - can't make installation decisions
+  'renter', 'tenant', 'not_homeowner', 'not_the_homeowner',
+  
+  // Positive terminal outcomes - lead is handled, stop the sequence!
+  'appointment_set', 'appointment_booked', 'appointment_scheduled', 'appointment',
+  'callback_requested', 'callback_scheduled', 'callback',
+  'converted', 'sale', 'closed_won', 'qualified', 'booked',
+  'transferred', 'spoke_with_decision_maker', 'hot_lead'
+];
+
+// Dispositions that should PAUSE (not remove) the workflow - lead needs more nurturing later
+const PAUSE_WORKFLOW_DISPOSITIONS = [
+  'follow_up', 'potential_prospect', 'needs_more_info', 'timing_not_right',
+  'send_info', 'left_voicemail', 'nurture', 'voicemail', 'dropped_call', 'not_connected'
+];
+
+serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({ error: 'Supabase configuration missing' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    const { action, leadId, userId, dispositionName, dispositionId, callOutcome, transcript, callId, aiConfidence, setBy } = await req.json();
+
+    // Handle health_check action for system verification
+    if (action === 'health_check') {
+      console.log('[Disposition Router] Health check requested');
+      return new Response(JSON.stringify({
+        success: true,
+        healthy: true,
+        timestamp: new Date().toISOString(),
+        function: 'disposition-router',
+        capabilities: ['process_disposition'],
+        dnc_dispositions: DNC_DISPOSITIONS.length,
+        remove_all_dispositions: REMOVE_ALL_DISPOSITIONS.length,
+        pause_workflow_dispositions: PAUSE_WORKFLOW_DISPOSITIONS.length,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (action === 'process_disposition') {
+      const normalizedDisposition = dispositionName?.toLowerCase().replace(/[^a-z0-9]/g, '_') || '';
+      const actions: string[] = [];
+      
+      // Get lead's current state for before/after tracking
+      const { data: leadBefore } = await supabase
+        .from('leads')
+        .select('status')
+        .eq('id', leadId)
+        .maybeSingle();
+      
+      // Get lead's current pipeline position
+      const { data: pipelineBefore } = await supabase
+        .from('lead_pipeline_positions')
+        .select(`
+          pipeline_board_id,
+          pipeline_boards!inner(name)
+        `)
+        .eq('lead_id', leadId)
+        .order('moved_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      // Get call timing data if callId provided
+      let callEndedAt = null;
+      let timeToDisposition = null;
+      let workflowId = null;
+      let campaignId = null;
+      
+      if (callId) {
+        const { data: call } = await supabase
+          .from('call_logs')
+          .select('ended_at, campaign_id')
+          .eq('id', callId)
+          .maybeSingle();
+        
+        if (call?.ended_at) {
+          callEndedAt = call.ended_at;
+          campaignId = call.campaign_id;
+          const endTime = new Date(call.ended_at).getTime();
+          const nowTime = Date.now();
+          timeToDisposition = Math.round((nowTime - endTime) / 1000); // seconds
+        }
+      }
+      
+      // Check if lead is in an active workflow
+      const { data: activeWorkflow } = await supabase
+        .from('lead_workflow_progress')
+        .select('workflow_id, campaign_id')
+        .eq('lead_id', leadId)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (activeWorkflow) {
+        workflowId = activeWorkflow.workflow_id;
+        if (!campaignId) campaignId = activeWorkflow.campaign_id;
+      }
+
+      // 1. Check for user-defined auto-actions
+      const { data: autoActions } = await supabase
+        .from('disposition_auto_actions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('active', true)
+        .or(`disposition_id.eq.${dispositionId},disposition_name.ilike.%${dispositionName}%`)
+        .order('priority', { ascending: true });
+
+      // Execute user-defined actions
+      for (const autoAction of autoActions || []) {
+        await executeAction(supabase, leadId, userId, autoAction);
+        actions.push(`Executed: ${autoAction.action_type}`);
+      }
+
+      // 2. Check for DNC trigger
+      if (DNC_DISPOSITIONS.some(d => normalizedDisposition.includes(d))) {
+        // Add to DNC list
+        const { data: lead } = await supabase
+          .from('leads')
+          .select('phone_number')
+          .eq('id', leadId)
+          .maybeSingle();
+
+        if (lead?.phone_number) {
+          await supabase.from('dnc_list').upsert({
+            user_id: userId,
+            phone_number: lead.phone_number,
+            reason: `Disposition: ${dispositionName}`,
+            added_at: new Date().toISOString(),
+          }, { onConflict: 'user_id,phone_number' });
+
+          // Update lead
+          await supabase
+            .from('leads')
+            .update({ do_not_call: true, status: 'dnc' })
+            .eq('id', leadId);
+
+          actions.push('Added to DNC list');
+        }
+      }
+
+      // 3. Check for remove from all campaigns trigger
+      if (REMOVE_ALL_DISPOSITIONS.some(d => normalizedDisposition.includes(d))) {
+        // Remove from all active workflows
+        await supabase
+          .from('lead_workflow_progress')
+          .update({
+            status: 'removed',
+            removal_reason: `Disposition: ${dispositionName}`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('lead_id', leadId)
+          .eq('status', 'active');
+
+        // Remove from dialing queues EXCEPT callbacks (priority >= 2)
+        // Callbacks are preserved so they can still fire at the scheduled time
+        await supabase
+          .from('dialing_queues')
+          .update({ status: 'removed' })
+          .eq('lead_id', leadId)
+          .in('status', ['pending', 'scheduled', 'calling'])
+          .lt('priority', 2); // Only remove non-callback entries
+
+        // Update lead status so they won't be re-queued by automations
+        await supabase
+          .from('leads')
+          .update({
+            status: normalizedDisposition || 'not_interested',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', leadId);
+
+        actions.push('Removed from workflow (callbacks preserved)');
+      }
+      
+      // 3b. Check for PAUSE workflow trigger (continue nurturing later)
+      if (PAUSE_WORKFLOW_DISPOSITIONS.some(d => normalizedDisposition.includes(d)) && 
+          !REMOVE_ALL_DISPOSITIONS.some(d => normalizedDisposition.includes(d))) {
+        // Pause (not remove) active workflows for later follow-up
+        await supabase
+          .from('lead_workflow_progress')
+          .update({
+            status: 'paused',
+            removal_reason: `Paused: ${dispositionName}`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('lead_id', leadId)
+          .eq('status', 'active');
+        
+        actions.push('Workflow paused for later follow-up');
+      }
+
+      // 4. Detect negative sentiment from transcript (if provided)
+      if (transcript) {
+        const negativePhrases = [
+          'stop calling', 'don\'t call again', 'leave me alone', 
+          'harassment', 'sue you', 'lawyer', 'block you',
+          'f*** you', 'go to hell', 'threatening'
+        ];
+        
+        const transcriptLower = transcript.toLowerCase();
+        const hasNegativeSentiment = negativePhrases.some(phrase => 
+          transcriptLower.includes(phrase)
+        );
+
+        if (hasNegativeSentiment) {
+          // Auto-DNC for very negative responses
+          const { data: lead } = await supabase
+            .from('leads')
+            .select('phone_number')
+            .eq('id', leadId)
+            .maybeSingle();
+
+          if (lead?.phone_number) {
+            await supabase.from('dnc_list').upsert({
+              user_id: userId,
+              phone_number: lead.phone_number,
+              reason: 'Negative sentiment detected in transcript',
+              added_at: new Date().toISOString(),
+            }, { onConflict: 'user_id,phone_number' });
+
+            await supabase
+              .from('leads')
+              .update({ do_not_call: true, status: 'dnc' })
+              .eq('id', leadId);
+
+            actions.push('Auto-DNC: Negative sentiment detected');
+          }
+        }
+      }
+
+      // 5. BULLETPROOF: Update lead pipeline position based on disposition
+      // First try disposition.pipeline_stage, then fall back to dispositionName
+      const { data: disposition } = await supabase
+        .from('dispositions')
+        .select('pipeline_stage, name')
+        .eq('id', dispositionId)
+        .maybeSingle();
+
+      // Determine the target stage name - try multiple sources
+      let targetStageName = disposition?.pipeline_stage || disposition?.name || dispositionName;
+      
+      // Normalize snake_case to Title Case (e.g., "hot_leads" -> "Hot Leads")
+      if (targetStageName && targetStageName.includes('_')) {
+        targetStageName = targetStageName
+          .split('_')
+          .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(' ');
+      }
+      
+      // Map common disposition names to standard pipeline stages
+      const stageNormalization: Record<string, string> = {
+        'callbacks': 'Callback Scheduled',
+        'callback': 'Callback Scheduled',
+        'callback requested': 'Callback Scheduled',
+        'hot leads': 'Hot Leads',
+        'hot lead': 'Hot Leads',
+        'not interested': 'Not Interested',
+        'no answer': 'Not Contacted',
+        'voicemail': 'Contacted',
+        'contacted': 'Contacted',
+        'appointment': 'Appointment Set',
+        'appointment set': 'Appointment Set',
+        'dnc': 'DNC',
+        'do not call': 'DNC',
+      };
+      
+      const normalizedLower = targetStageName?.toLowerCase() || '';
+      if (stageNormalization[normalizedLower]) {
+        targetStageName = stageNormalization[normalizedLower];
+      }
+
+      if (targetStageName) {
+        try {
+          // BULLETPROOF: Ensure board exists, create if missing
+          const board = await ensurePipelineBoardLocal(supabase, userId, targetStageName);
+          
+          console.log(`[Disposition Router] Moving lead ${leadId} to pipeline: ${board.name} (board: ${board.id})`);
+          const { error: pipelineError } = await supabase.from('lead_pipeline_positions').upsert({
+            user_id: userId,
+            lead_id: leadId,
+            pipeline_board_id: board.id,
+            position: 0,
+            moved_at: new Date().toISOString(),
+            moved_by_user: false,
+            notes: `Auto-moved by disposition: ${dispositionName}`,
+          }, { onConflict: 'lead_id,user_id' });
+
+          if (pipelineError) {
+            console.error(`[Disposition Router] Pipeline update FAILED:`, pipelineError);
+          } else {
+            console.log(`[Disposition Router] ✅ Pipeline updated successfully${board.created ? ' (board auto-created)' : ''}`);
+            actions.push(`Moved to pipeline stage: ${board.name}`);
+          }
+        } catch (pipelineErr) {
+          console.error(`[Disposition Router] Pipeline board error:`, pipelineErr);
+        }
+      }
+
+      // 6. Record reachability event
+      await supabase.from('reachability_events').insert({
+        user_id: userId,
+        lead_id: leadId,
+        event_type: 'disposition_set',
+        event_outcome: dispositionName,
+        metadata: { dispositionId, callOutcome },
+      });
+      
+      // 7. RECORD DISPOSITION METRICS for analytics
+      const { data: leadAfter } = await supabase
+        .from('leads')
+        .select('status')
+        .eq('id', leadId)
+        .maybeSingle();
+      
+      const { data: pipelineAfter } = await supabase
+        .from('lead_pipeline_positions')
+        .select(`
+          pipeline_board_id,
+          pipeline_boards!inner(name)
+        `)
+        .eq('lead_id', leadId)
+        .order('moved_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      // Insert comprehensive metrics
+      const metricsInsertResult = await supabase
+        .from('disposition_metrics')
+        .insert({
+          user_id: userId,
+          lead_id: leadId,
+          call_id: callId || null,
+          disposition_id: dispositionId || null,
+          disposition_name: dispositionName,
+          set_by: setBy || 'manual', // 'ai', 'manual', 'automation', or 'ai_sms'
+          set_by_user_id: setBy === 'manual' ? userId : null,
+          ai_confidence_score: aiConfidence || null,
+          call_ended_at: callEndedAt,
+          disposition_set_at: new Date().toISOString(),
+          time_to_disposition_seconds: timeToDisposition,
+          previous_status: leadBefore?.status || null,
+          new_status: leadAfter?.status || null,
+          previous_pipeline_stage: Array.isArray(pipelineBefore?.pipeline_boards) ? (pipelineBefore.pipeline_boards as any)[0]?.name : (pipelineBefore?.pipeline_boards as any)?.name || null,
+          new_pipeline_stage: Array.isArray(pipelineAfter?.pipeline_boards) ? (pipelineAfter.pipeline_boards as any)[0]?.name : (pipelineAfter?.pipeline_boards as any)?.name || null,
+          workflow_id: workflowId,
+          campaign_id: campaignId,
+          actions_triggered: actions.map((action, index) => ({
+            action: action,
+            triggered_at: new Date().toISOString(),
+            order: index + 1
+          })), // Structured array for better analytics
+          metadata: {
+            call_outcome: callOutcome,
+            had_transcript: !!transcript,
+            auto_actions_count: autoActions?.length || 0,
+            source: setBy === 'ai_sms' ? 'sms' : 'voice', // Track SMS vs voice source
+          },
+        });
+      
+      if (metricsInsertResult.error) {
+        console.error('[Disposition Metrics] Failed to insert metrics:', metricsInsertResult.error);
+        // Don't fail the whole request, just log the error
+      } else {
+        console.log('[Disposition Metrics] Recorded metrics for disposition:', dispositionName, 'via:', setBy);
+      }
+
+      return new Response(JSON.stringify({ success: true, actions }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    throw new Error('Unknown action');
+  } catch (error) {
+    console.error('Error in disposition-router:', error);
+    return new Response(JSON.stringify({ 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+});
+
+async function executeAction(supabase: any, leadId: string, userId: string, autoAction: any) {
+  const config = autoAction.action_config || {};
+  const startTime = Date.now();
+  let success = true;
+  let errorMessage = null;
+
+  try {
+    switch (autoAction.action_type) {
+      case 'remove_all_campaigns':
+        await supabase
+          .from('lead_workflow_progress')
+          .update({ status: 'removed', removal_reason: 'Auto-action', updated_at: new Date().toISOString() })
+          .eq('lead_id', leadId)
+          .eq('status', 'active');
+        break;
+
+      case 'remove_from_campaign':
+        if (config.campaign_id) {
+          await supabase
+            .from('lead_workflow_progress')
+            .update({ status: 'removed', removal_reason: 'Auto-action', updated_at: new Date().toISOString() })
+            .eq('lead_id', leadId)
+            .eq('campaign_id', config.campaign_id);
+        }
+        break;
+
+      case 'move_to_stage':
+      if (config.target_stage_id) {
+        console.log(`[Disposition Router] Moving lead ${leadId} to stage: ${config.target_stage_id}`);
+        const { error: moveError } = await supabase.from('lead_pipeline_positions').upsert({
+          user_id: userId,
+          lead_id: leadId,
+          pipeline_board_id: config.target_stage_id,
+          position: 0,
+          moved_at: new Date().toISOString(),
+          moved_by_user: false,
+        }, { onConflict: 'lead_id,user_id' });
+        if (moveError) {
+          console.error(`[Disposition Router] move_to_stage FAILED:`, moveError);
+        } else {
+          console.log(`[Disposition Router] ✅ move_to_stage successful`);
+        }
+      }
+      break;
+
+    case 'add_to_dnc':
+      const { data: lead } = await supabase
+        .from('leads')
+        .select('phone_number')
+        .eq('id', leadId)
+        .maybeSingle();
+
+      if (lead) {
+        await supabase.from('dnc_list').upsert({
+          user_id: userId,
+          phone_number: lead.phone_number,
+          reason: 'Auto-action from disposition',
+          added_at: new Date().toISOString(),
+        }, { onConflict: 'user_id,phone_number' });
+
+        await supabase
+          .from('leads')
+          .update({ do_not_call: true })
+          .eq('id', leadId);
+      }
+      break;
+
+    case 'start_workflow':
+      if (config.target_workflow_id) {
+        // Call workflow-executor to start the workflow
+        await supabase.functions.invoke('workflow-executor', {
+          body: {
+            action: 'start_workflow',
+            userId,
+            leadId,
+            workflowId: config.target_workflow_id,
+            campaignId: config.campaign_id || null,
+          },
+        });
+        console.log(`Started workflow ${config.target_workflow_id} for lead ${leadId}`);
+      }
+      break;
+
+    case 'send_sms':
+      if (config.message) {
+        // Get lead phone and user's available numbers
+        const { data: leadForSms } = await supabase.from('leads').select('phone_number').eq('id', leadId).maybeSingle();
+        const { data: availableNumber } = await supabase
+          .from('phone_numbers')
+          .select('number')
+          .eq('user_id', userId)
+          .eq('status', 'active')
+          .limit(1)
+          .maybeSingle();
+        
+        if (leadForSms?.phone_number && availableNumber?.number) {
+          await supabase.functions.invoke('sms-messaging', {
+            body: {
+              action: 'send_sms',
+              to: leadForSms.phone_number,
+              from: availableNumber.number,
+              body: config.message,
+              lead_id: leadId,
+            },
+          });
+        } else {
+          console.error('Cannot send SMS: missing lead phone or no available sending number');
+        }
+      }
+      break;
+
+    case 'schedule_callback':
+      const delayHours = config.delay_hours || 24;
+      const callbackTime = new Date(Date.now() + delayHours * 60 * 60 * 1000).toISOString();
+      await supabase
+        .from('leads')
+        .update({ next_callback_at: callbackTime, status: 'callback' })
+        .eq('id', leadId);
+      break;
+
+    case 'book_appointment':
+      // Book appointment via calendar integration
+      if (config.title) {
+        const appointmentTime = config.start_time 
+          ? new Date(config.start_time).toISOString()
+          : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // Default: tomorrow
+        
+        const endTime = new Date(new Date(appointmentTime).getTime() + (config.duration_minutes || 30) * 60000).toISOString();
+        
+        const { data: leadData } = await supabase
+          .from('leads')
+          .select('first_name, last_name, email, phone_number')
+          .eq('id', leadId)
+          .maybeSingle();
+
+        // Create appointment in our system
+        await supabase.from('calendar_appointments').insert({
+          user_id: userId,
+          lead_id: leadId,
+          title: config.title || `Appointment with ${leadData?.first_name || 'Lead'}`,
+          start_time: appointmentTime,
+          end_time: endTime,
+          timezone: 'America/New_York',
+          status: 'scheduled',
+        });
+
+        // Sync to Google Calendar if connected
+        await supabase.functions.invoke('calendar-integration', {
+          body: {
+            action: 'book_appointment',
+            date: appointmentTime.split('T')[0],
+            time: appointmentTime.split('T')[1].substring(0, 5),
+            duration_minutes: config.duration_minutes || 30,
+            attendee_name: leadData ? `${leadData.first_name || ''} ${leadData.last_name || ''}`.trim() : 'Lead',
+            attendee_email: leadData?.email,
+            title: config.title || 'Appointment',
+          },
+        });
+
+        console.log(`Booked appointment for lead ${leadId}`);
+      }
+      break;
+      
+    default:
+      console.warn(`[Disposition Router] Unknown action type: ${autoAction.action_type}`);
+      errorMessage = `Unknown action type: ${autoAction.action_type}`;
+      success = false;
+  }
+  } catch (error: any) {
+    success = false;
+    errorMessage = error.message;
+    console.error(`[Disposition Router] Action ${autoAction.action_type} failed:`, error);
+    
+    // Log error to database
+    await supabase.from('edge_function_errors').insert({
+      function_name: 'disposition-router',
+      action: `executeAction: ${autoAction.action_type}`,
+      user_id: userId,
+      lead_id: leadId,
+      error_message: errorMessage,
+      error_stack: error.stack,
+      request_payload: { autoAction, config },
+      severity: 'error'
+    });
+  }
+  
+  // Track action execution
+  const executionTime = Date.now() - startTime;
+  console.log(`[Disposition Router] Action ${autoAction.action_type} ${success ? 'succeeded' : 'failed'} in ${executionTime}ms`);
+  
+  return { success, error: errorMessage, executionTime };
+}
+
+// BULLETPROOF local helper - ensures pipeline board exists, creates if missing
+async function ensurePipelineBoardLocal(
+  supabase: any,
+  userId: string,
+  desiredName: string
+): Promise<{ id: string; name: string; created: boolean }> {
+  const normalizedName = desiredName.trim();
+  
+  // Try case-insensitive match first
+  const { data: existingBoards } = await supabase
+    .from('pipeline_boards')
+    .select('id, name, position')
+    .eq('user_id', userId);
+  
+  // Case-insensitive matching with common variations
+  const variations = [
+    normalizedName.toLowerCase(),
+    normalizedName.toLowerCase().replace(/_/g, ' '),
+  ];
+  
+  for (const board of existingBoards || []) {
+    const boardNameLower = board.name.toLowerCase();
+    if (variations.includes(boardNameLower) || boardNameLower === normalizedName.toLowerCase()) {
+      return { id: board.id, name: board.name, created: false };
+    }
+  }
+  
+  // Create the board if not found
+  const maxPosition = (existingBoards || []).reduce((max: number, b: any) => 
+    Math.max(max, b.position || 0), 0);
+  
+  const { data: created, error } = await supabase
+    .from('pipeline_boards')
+    .insert({
+      user_id: userId,
+      name: normalizedName,
+      description: `Auto-created for: ${normalizedName}`,
+      position: maxPosition + 1,
+      settings: {},
+    })
+    .select('id, name')
+    .single();
+  
+  if (error) throw error;
+  
+  console.log(`[Disposition Router] ✅ Auto-created pipeline board: ${created.name}`);
+  return { id: created.id, name: created.name, created: true };
+}

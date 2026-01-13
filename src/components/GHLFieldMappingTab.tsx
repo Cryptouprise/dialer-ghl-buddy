@@ -1,0 +1,1351 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useToast } from '@/hooks/use-toast';
+import { useGoHighLevel } from '@/hooks/useGoHighLevel';
+import { Database, RefreshCw, Plus, Tag, GitBranch, Zap, Check, X, Wand2, Search, Calendar, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { cn } from '@/lib/utils';
+
+interface GHLCustomField {
+  id: string;
+  name: string;
+  fieldKey: string;
+  dataType: string;
+}
+
+interface GHLPipeline {
+  id: string;
+  name: string;
+  stages: Array<{ id: string; name: string; position: number }>;
+}
+
+interface GHLCalendar {
+  id: string;
+  name: string;
+  calendarType?: string;
+  isActive?: boolean;
+}
+
+interface FieldMappingTabProps {
+  isConnected: boolean;
+}
+
+// EXPANDED SYSTEM_FIELDS - 35+ fields grouped by category
+const SYSTEM_FIELDS = {
+  callAnalysis: {
+    label: 'Call Analysis',
+    fields: [
+      { key: 'outcome', label: 'Call Outcome', description: 'The result of the call (interested, not_interested, etc.)', suggestedMatches: ['last_call_outcome', 'call_outcome', 'outcome', 'last_outcome', 'call_result'] },
+      { key: 'notes', label: 'Call Notes/Transcript', description: 'Call transcript or agent notes', suggestedMatches: ['last_call_notes', 'call_notes', 'notes', 'transcript', 'call_transcript'] },
+      { key: 'duration', label: 'Call Duration', description: 'Length of call in seconds', suggestedMatches: ['last_call_duration', 'call_duration', 'duration', 'call_length'] },
+      { key: 'date', label: 'Call Date', description: 'Date and time of the call', suggestedMatches: ['last_call_date', 'call_date', 'last_contacted', 'last_call'] },
+      { key: 'recordingUrl', label: 'Recording URL', description: 'Link to call recording', suggestedMatches: ['call_recording', 'recording_url', 'recording', 'call_recording_url'] },
+      { key: 'sentiment', label: 'AI Sentiment', description: 'Detected sentiment (positive/neutral/negative)', suggestedMatches: ['ai_sentiment', 'sentiment', 'call_sentiment', 'sentiment_score'] },
+      { key: 'summary', label: 'Call Summary', description: 'AI-generated call summary', suggestedMatches: ['call_summary', 'summary', 'ai_summary', 'call_notes'] },
+      { key: 'confidence', label: 'AI Confidence', description: 'AI confidence score (0-100)', suggestedMatches: ['ai_confidence', 'confidence', 'confidence_score'] },
+      { key: 'reasoning', label: 'AI Reasoning', description: 'AI reasoning for disposition', suggestedMatches: ['ai_reasoning', 'reasoning', 'disposition_reason'] },
+      { key: 'keyPoints', label: 'Key Points', description: 'Important points from the call', suggestedMatches: ['key_points', 'keypoints', 'highlights', 'important_points'] },
+      { key: 'painPoints', label: 'Pain Points', description: 'Customer pain points identified', suggestedMatches: ['pain_points', 'painpoints', 'problems', 'challenges'] },
+      { key: 'objections', label: 'Objections', description: 'Objections raised during call', suggestedMatches: ['objections', 'concerns', 'issues_raised'] },
+      { key: 'nextAction', label: 'Next Action', description: 'Recommended next action', suggestedMatches: ['next_action', 'nextaction', 'follow_up_action', 'next_step'] },
+      { key: 'disposition', label: 'Disposition', description: 'Final call disposition', suggestedMatches: ['disposition', 'call_disposition', 'final_status'] },
+      { key: 'callSuccessful', label: 'Call Successful', description: 'Whether the call was successful', suggestedMatches: ['call_successful', 'successful', 'was_successful'] },
+    ]
+  },
+  leadData: {
+    label: 'Lead Information',
+    fields: [
+      { key: 'firstName', label: 'First Name', description: 'Lead first name', suggestedMatches: ['first_name', 'firstname', 'name'] },
+      { key: 'lastName', label: 'Last Name', description: 'Lead last name', suggestedMatches: ['last_name', 'lastname', 'surname'] },
+      { key: 'fullName', label: 'Full Name', description: 'Lead full name', suggestedMatches: ['full_name', 'fullname', 'name', 'contact_name'] },
+      { key: 'email', label: 'Email', description: 'Lead email address', suggestedMatches: ['email', 'email_address', 'contact_email'] },
+      { key: 'phoneNumber', label: 'Phone Number', description: 'Lead phone number', suggestedMatches: ['phone', 'phone_number', 'mobile', 'contact_phone'] },
+      { key: 'company', label: 'Company', description: 'Lead company name', suggestedMatches: ['company', 'company_name', 'business', 'organization'] },
+      { key: 'address', label: 'Address', description: 'Street address', suggestedMatches: ['address', 'street_address', 'address1'] },
+      { key: 'city', label: 'City', description: 'City', suggestedMatches: ['city', 'town'] },
+      { key: 'state', label: 'State', description: 'State/Province', suggestedMatches: ['state', 'province', 'region'] },
+      { key: 'zipCode', label: 'Zip Code', description: 'Postal code', suggestedMatches: ['zip', 'zip_code', 'postal_code', 'zipcode'] },
+      { key: 'leadSource', label: 'Lead Source', description: 'Where the lead came from', suggestedMatches: ['lead_source', 'source', 'campaign_source'] },
+      { key: 'timezone', label: 'Timezone', description: 'Lead timezone', suggestedMatches: ['timezone', 'time_zone', 'tz'] },
+      { key: 'preferredContactTime', label: 'Preferred Contact Time', description: 'Best time to contact', suggestedMatches: ['preferred_time', 'best_time', 'contact_time', 'preferred_contact_time'] },
+      { key: 'tags', label: 'Tags', description: 'Lead tags (comma separated)', suggestedMatches: ['tags', 'labels', 'categories'] },
+    ]
+  },
+  statsMetrics: {
+    label: 'Stats & Metrics',
+    fields: [
+      { key: 'totalCalls', label: 'Total Calls Made', description: 'Total number of calls to this lead', suggestedMatches: ['total_calls', 'call_count', 'total_call_count', 'calls_made'] },
+      { key: 'leadScore', label: 'Lead Score', description: 'Calculated priority score', suggestedMatches: ['lead_score', 'priority', 'score', 'priority_score', 'lead_priority'] },
+      { key: 'campaignName', label: 'Campaign Name', description: 'Name of the campaign', suggestedMatches: ['campaign', 'campaign_name', 'marketing_campaign'] },
+      { key: 'agentName', label: 'Agent Name', description: 'AI agent name used', suggestedMatches: ['agent', 'agent_name', 'ai_agent', 'bot_name'] },
+      { key: 'reachabilityScore', label: 'Reachability Score', description: 'How reachable the lead is', suggestedMatches: ['reachability', 'reachability_score', 'reach_score'] },
+      { key: 'engagementScore', label: 'Engagement Score', description: 'Lead engagement level', suggestedMatches: ['engagement', 'engagement_score', 'engage_score'] },
+    ]
+  },
+  appointmentData: {
+    label: 'Appointment Data',
+    fields: [
+      { key: 'appointmentDate', label: 'Appointment Date', description: 'Scheduled appointment date', suggestedMatches: ['appointment_date', 'appt_date', 'meeting_date', 'booking_date'] },
+      { key: 'appointmentTime', label: 'Appointment Time', description: 'Scheduled appointment time', suggestedMatches: ['appointment_time', 'appt_time', 'meeting_time', 'booking_time'] },
+      { key: 'callbackDate', label: 'Callback Date', description: 'Scheduled callback date', suggestedMatches: ['callback_date', 'followup_date', 'next_call_date', 'callback'] },
+      { key: 'appointmentNotes', label: 'Appointment Notes', description: 'Notes for the appointment', suggestedMatches: ['appointment_notes', 'appt_notes', 'meeting_notes'] },
+    ]
+  }
+};
+
+// Flatten fields for easy iteration
+const ALL_SYSTEM_FIELDS = Object.values(SYSTEM_FIELDS).flatMap(category => category.fields);
+
+// Default call outcomes
+const CALL_OUTCOMES = [
+  'interested',
+  'not_interested',
+  'callback_requested',
+  'appointment_set',
+  'voicemail',
+  'no_answer',
+  'dnc',
+  'busy',
+  'wrong_number',
+  'completed'
+];
+
+// Searchable Field Selector Component
+const FieldSelector: React.FC<{
+  value: string;
+  onValueChange: (value: string) => void;
+  options: GHLCustomField[];
+  placeholder?: string;
+}> = ({ value, onValueChange, options, placeholder = "Select field..." }) => {
+  const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredOptions = useMemo(() => {
+    if (!searchQuery) return options;
+    const query = searchQuery.toLowerCase();
+    return options.filter(opt => 
+      opt.name.toLowerCase().includes(query) ||
+      (opt.fieldKey && opt.fieldKey.toLowerCase().includes(query))
+    );
+  }, [options, searchQuery]);
+
+  const selectedOption = options.find(o => (o.fieldKey || o.name || o.id) === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between text-left font-normal"
+        >
+          <span className="truncate">
+            {value === '_none_' ? "Don't sync" : selectedOption?.name || placeholder}
+          </span>
+          <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[300px] p-0 bg-popover border shadow-lg z-50" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput 
+            placeholder="Search fields..." 
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+          />
+          <CommandList>
+            <CommandEmpty>No field found.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value="_none_"
+                onSelect={() => {
+                  onValueChange('_none_');
+                  setOpen(false);
+                  setSearchQuery('');
+                }}
+              >
+                <Check className={cn("mr-2 h-4 w-4", value === '_none_' ? "opacity-100" : "opacity-0")} />
+                Don't sync
+              </CommandItem>
+              {filteredOptions.map((field) => {
+                const fieldValue = field.fieldKey || field.name || field.id;
+                return (
+                  <CommandItem
+                    key={field.id}
+                    value={fieldValue}
+                    onSelect={() => {
+                      onValueChange(fieldValue);
+                      setOpen(false);
+                      setSearchQuery('');
+                    }}
+                  >
+                    <Check className={cn("mr-2 h-4 w-4", value === fieldValue ? "opacity-100" : "opacity-0")} />
+                    <div className="flex flex-col">
+                      <span>{field.name}</span>
+                      <span className="text-xs text-muted-foreground">{field.dataType}</span>
+                    </div>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+// Stage Selector Component
+const StageSelector: React.FC<{
+  value: string;
+  onValueChange: (value: string) => void;
+  stages: Array<{ id: string; name: string; position: number }>;
+  placeholder?: string;
+}> = ({ value, onValueChange, stages, placeholder = "Select stage..." }) => {
+  const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredStages = useMemo(() => {
+    if (!searchQuery) return stages;
+    const query = searchQuery.toLowerCase();
+    return stages.filter(s => s.name.toLowerCase().includes(query));
+  }, [stages, searchQuery]);
+
+  const selectedStage = stages.find(s => s.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between text-left font-normal"
+        >
+          <span className="truncate">
+            {value === '_none_' ? "Don't move" : selectedStage?.name || placeholder}
+          </span>
+          <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[250px] p-0 bg-popover border shadow-lg z-50" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput 
+            placeholder="Search stages..." 
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+          />
+          <CommandList>
+            <CommandEmpty>No stage found.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value="_none_"
+                onSelect={() => {
+                  onValueChange('_none_');
+                  setOpen(false);
+                  setSearchQuery('');
+                }}
+              >
+                <Check className={cn("mr-2 h-4 w-4", value === '_none_' ? "opacity-100" : "opacity-0")} />
+                Don't move
+              </CommandItem>
+              {filteredStages.map((stage) => (
+                <CommandItem
+                  key={stage.id}
+                  value={stage.id}
+                  onSelect={() => {
+                    onValueChange(stage.id);
+                    setOpen(false);
+                    setSearchQuery('');
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4", value === stage.id ? "opacity-100" : "opacity-0")} />
+                  {stage.name}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+// Calendar Selector Component
+const CalendarSelector: React.FC<{
+  value: string;
+  onValueChange: (value: string) => void;
+  calendars: GHLCalendar[];
+  placeholder?: string;
+}> = ({ value, onValueChange, calendars, placeholder = "Select calendar..." }) => {
+  const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredCalendars = useMemo(() => {
+    if (!searchQuery) return calendars;
+    const query = searchQuery.toLowerCase();
+    return calendars.filter(c => c.name.toLowerCase().includes(query));
+  }, [calendars, searchQuery]);
+
+  const selectedCalendar = calendars.find(c => c.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between text-left font-normal"
+        >
+          <span className="truncate">
+            {!value ? placeholder : selectedCalendar?.name || placeholder}
+          </span>
+          <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[300px] p-0 bg-popover border shadow-lg z-50" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput 
+            placeholder="Search calendars..." 
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+          />
+          <CommandList>
+            <CommandEmpty>No calendar found.</CommandEmpty>
+            <CommandGroup>
+              {filteredCalendars.map((calendar) => (
+                <CommandItem
+                  key={calendar.id}
+                  value={calendar.id}
+                  onSelect={() => {
+                    onValueChange(calendar.id);
+                    setOpen(false);
+                    setSearchQuery('');
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4", value === calendar.id ? "opacity-100" : "opacity-0")} />
+                  <div className="flex flex-col">
+                    <span>{calendar.name}</span>
+                    {calendar.calendarType && (
+                      <span className="text-xs text-muted-foreground capitalize">{calendar.calendarType.replace(/_/g, ' ')}</span>
+                    )}
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+const GHLFieldMappingTab: React.FC<FieldMappingTabProps> = ({ isConnected }) => {
+  const { toast } = useToast();
+  const {
+    isLoading,
+    getCustomFields,
+    createCustomField,
+    getPipelines,
+    getCalendars,
+    testCalendar,
+    getSyncSettings,
+    saveSyncSettings
+  } = useGoHighLevel();
+
+  const [ghlCustomFields, setGhlCustomFields] = useState<GHLCustomField[]>([]);
+  const [ghlCalendars, setGhlCalendars] = useState<GHLCalendar[]>([]);
+  const [pipelines, setPipelines] = useState<GHLPipeline[]>([]);
+  const [fieldMappings, setFieldMappings] = useState<Record<string, string>>({});
+  const [tagRules, setTagRules] = useState<Record<string, string[]>>({});
+  const [pipelineMappings, setPipelineMappings] = useState<Record<string, string>>({});
+  const [defaultPipelineId, setDefaultPipelineId] = useState<string>('');
+  const [autoCreateOpportunities, setAutoCreateOpportunities] = useState(false);
+  const [defaultOpportunityValue, setDefaultOpportunityValue] = useState(0);
+  const [removeConflictingTags, setRemoveConflictingTags] = useState(true);
+  const [showAllFields, setShowAllFields] = useState(false);
+  const [fieldSearchQuery, setFieldSearchQuery] = useState('');
+  const [syncEnabled, setSyncEnabled] = useState(true);
+  const [newTagInput, setNewTagInput] = useState<Record<string, string>>({});
+  const [expandedTagOutcomes, setExpandedTagOutcomes] = useState<Record<string, boolean>>({});
+  const [newFieldName, setNewFieldName] = useState('');
+  const [newFieldType, setNewFieldType] = useState('TEXT');
+  const [calendarPreference, setCalendarPreference] = useState<'google' | 'ghl' | 'both' | 'none'>('both');
+  const [ghlCalendarId, setGhlCalendarId] = useState<string>('');
+  const [ghlCalendarName, setGhlCalendarName] = useState<string>('');
+  const [hasAutoMatched, setHasAutoMatched] = useState(false);
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
+    callAnalysis: true,
+    leadData: false,
+    statsMetrics: false,
+    appointmentData: false
+  });
+  const [isTestingCalendar, setIsTestingCalendar] = useState(false);
+
+  useEffect(() => {
+    if (isConnected) {
+      loadData();
+    }
+  }, [isConnected]);
+
+  // Smart auto-matching function with fuzzy matching
+  const autoMatchFields = (ghlFields: GHLCustomField[], existingMappings: Record<string, string>) => {
+    const newMappings: Record<string, string> = { ...existingMappings };
+    let matchCount = 0;
+
+    ALL_SYSTEM_FIELDS.forEach(systemField => {
+      // Skip if already mapped
+      if (existingMappings[systemField.key] && existingMappings[systemField.key] !== '_none_') {
+        return;
+      }
+
+      // Try to find a matching GHL field with fuzzy matching
+      const normalizedSuggestions = systemField.suggestedMatches.map(s => s.toLowerCase().replace(/[_\s-]/g, ''));
+      const systemKeyNormalized = systemField.key.toLowerCase().replace(/[_\s-]/g, '');
+      
+      for (const ghlField of ghlFields) {
+        const normalizedFieldKey = (ghlField.fieldKey || '').toLowerCase().replace(/[_\s-]/g, '');
+        const normalizedName = (ghlField.name || '').toLowerCase().replace(/[_\s-]/g, '');
+        
+        // Check if any suggestion matches or if field key/name contains the system key
+        const isMatch = normalizedSuggestions.some(suggestion => 
+          normalizedFieldKey.includes(suggestion) || 
+          normalizedName.includes(suggestion) ||
+          suggestion.includes(normalizedFieldKey) ||
+          suggestion.includes(normalizedName)
+        ) || normalizedFieldKey.includes(systemKeyNormalized) || normalizedName.includes(systemKeyNormalized);
+
+        if (isMatch) {
+          newMappings[systemField.key] = ghlField.fieldKey || ghlField.name || ghlField.id;
+          matchCount++;
+          break;
+        }
+      }
+    });
+
+    return { mappings: newMappings, matchCount };
+  };
+
+  const loadData = async () => {
+    // Load GHL custom fields
+    const fields = await getCustomFields();
+    if (fields) {
+      setGhlCustomFields(fields);
+    }
+
+    // Load pipelines
+    const pipelineData = await getPipelines();
+    if (pipelineData) {
+      setPipelines(pipelineData);
+    }
+
+    // Load GHL calendars
+    const calendarData = await getCalendars();
+    if (calendarData) {
+      setGhlCalendars(calendarData);
+    }
+
+    // Load saved settings
+    const settings = await getSyncSettings();
+    if (settings) {
+      let mappings = settings.field_mappings || {};
+      
+      // Auto-match on first load if no mappings exist
+      if (fields && Object.keys(mappings).filter(k => mappings[k] && mappings[k] !== '_none_').length === 0) {
+        const { mappings: autoMappings, matchCount } = autoMatchFields(fields, {});
+        mappings = autoMappings;
+        if (matchCount > 0) {
+          setHasAutoMatched(true);
+          toast({
+            title: "Smart Matching",
+            description: `Auto-matched ${matchCount} fields based on similar names`,
+          });
+        }
+      }
+      
+      setFieldMappings(mappings);
+      setTagRules(settings.tag_rules || {});
+      setPipelineMappings(settings.pipeline_stage_mappings || {});
+      setDefaultPipelineId(settings.default_pipeline_id || '');
+      setAutoCreateOpportunities(settings.auto_create_opportunities);
+      setDefaultOpportunityValue(settings.default_opportunity_value);
+      setRemoveConflictingTags(settings.remove_conflicting_tags);
+      setSyncEnabled(settings.sync_enabled);
+      setCalendarPreference(settings.calendar_preference || 'both');
+      setGhlCalendarId(settings.ghl_calendar_id || '');
+      setGhlCalendarName(settings.ghl_calendar_name || '');
+    }
+  };
+
+  const handleAutoMatch = () => {
+    const { mappings, matchCount } = autoMatchFields(ghlCustomFields, {});
+    setFieldMappings(mappings);
+    const unmappedCount = ALL_SYSTEM_FIELDS.length - matchCount;
+    toast({
+      title: "Smart Matching Complete",
+      description: matchCount > 0 
+        ? `Auto-matched ${matchCount} fields. ${unmappedCount} fields need manual mapping.`
+        : "No matching fields found. You can map them manually.",
+    });
+  };
+
+  const handleSaveSettings = async () => {
+    // Validate GHL calendar selection if GHL is enabled
+    if ((calendarPreference === 'ghl' || calendarPreference === 'both') && !ghlCalendarId) {
+      toast({
+        title: "Warning",
+        description: "Please select a GHL calendar for appointment booking",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Convert _none_ values back to empty strings for storage
+    const cleanMappings: Record<string, string> = {};
+    Object.entries(fieldMappings).forEach(([key, value]) => {
+      cleanMappings[key] = value === '_none_' ? '' : value;
+    });
+
+    const cleanPipelineMappings: Record<string, string> = {};
+    Object.entries(pipelineMappings).forEach(([key, value]) => {
+      cleanPipelineMappings[key] = value === '_none_' ? '' : value;
+    });
+
+    // Get calendar name from selected calendar
+    const selectedCalendar = ghlCalendars.find(c => c.id === ghlCalendarId);
+
+    const success = await saveSyncSettings({
+      field_mappings: cleanMappings,
+      tag_rules: tagRules,
+      pipeline_stage_mappings: cleanPipelineMappings,
+      default_pipeline_id: defaultPipelineId || null,
+      auto_create_opportunities: autoCreateOpportunities,
+      default_opportunity_value: defaultOpportunityValue,
+      remove_conflicting_tags: removeConflictingTags,
+      sync_enabled: syncEnabled,
+      calendar_preference: calendarPreference,
+      ghl_calendar_id: ghlCalendarId || null,
+      ghl_calendar_name: selectedCalendar?.name || null
+    });
+
+    if (success) {
+      toast({
+        title: "Settings Saved",
+        description: "Your GHL sync settings have been saved successfully"
+      });
+    }
+  };
+
+  const handleCreateField = async () => {
+    if (!newFieldName) {
+      toast({
+        title: "Error",
+        description: "Please enter a field name",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const result = await createCustomField({
+      name: newFieldName,
+      dataType: newFieldType
+    });
+
+    if (result) {
+      setGhlCustomFields(prev => [...prev, result]);
+      setNewFieldName('');
+      toast({
+        title: "Field Created",
+        description: `Created custom field: ${newFieldName}`
+      });
+    }
+  };
+
+  const handleAddTag = (outcome: string) => {
+    const tag = newTagInput[outcome]?.trim();
+    if (!tag) return;
+
+    setTagRules(prev => ({
+      ...prev,
+      [outcome]: [...(prev[outcome] || []), tag]
+    }));
+    setNewTagInput(prev => ({ ...prev, [outcome]: '' }));
+  };
+
+  const handleRemoveTag = (outcome: string, tagIndex: number) => {
+    setTagRules(prev => ({
+      ...prev,
+      [outcome]: prev[outcome]?.filter((_, i) => i !== tagIndex) || []
+    }));
+  };
+
+  const toggleCategory = (category: string) => {
+    setExpandedCategories(prev => ({
+      ...prev,
+      [category]: !prev[category]
+    }));
+  };
+
+  // Calculate mapping stats
+  const mappedFieldsCount = Object.values(fieldMappings).filter(v => v && v !== '_none_').length;
+  const totalFieldsCount = ALL_SYSTEM_FIELDS.length;
+  const mappingPercentage = Math.round((mappedFieldsCount / totalFieldsCount) * 100);
+
+  const selectedPipeline = pipelines.find(p => p.id === defaultPipelineId);
+
+  if (!isConnected) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center">
+          <Database className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+          <p className="text-muted-foreground">Connect to Go High Level to configure field mappings</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Master Sync Toggle */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Zap className="h-5 w-5" />
+              Post-Call GHL Sync
+            </div>
+            <div className="flex items-center gap-3">
+              <Badge variant={syncEnabled ? "default" : "secondary"}>
+                {syncEnabled ? "Enabled" : "Disabled"}
+              </Badge>
+              <Switch
+                checked={syncEnabled}
+                onCheckedChange={setSyncEnabled}
+              />
+            </div>
+          </CardTitle>
+          <CardDescription>
+            Automatically sync call data to Go High Level after each call completes
+          </CardDescription>
+        </CardHeader>
+      </Card>
+
+      {/* Calendar Preference with GHL Calendar Selection */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Calendar Booking Preference
+          </CardTitle>
+          <CardDescription>
+            Choose which calendar(s) to use when AI agents book appointments
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { value: 'google', label: 'Google Only', desc: 'Sync to Google Calendar only' },
+              { value: 'ghl', label: 'GHL Only', desc: 'Sync to Go High Level calendar only' },
+              { value: 'both', label: 'Both Calendars', desc: 'Sync to Google and GHL' },
+              { value: 'none', label: 'Local Only', desc: 'Save locally, no external sync' },
+            ].map((option) => (
+              <div
+                key={option.value}
+                onClick={() => setCalendarPreference(option.value as any)}
+                className={cn(
+                  "p-4 border-2 rounded-lg cursor-pointer transition-all",
+                  calendarPreference === option.value
+                    ? "border-primary bg-primary/5"
+                    : "border-muted hover:border-muted-foreground/50"
+                )}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  {calendarPreference === option.value && <Check className="h-4 w-4 text-primary" />}
+                  <span className="font-medium text-sm">{option.label}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">{option.desc}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* GHL Calendar Selection - show when GHL is selected */}
+          {(calendarPreference === 'ghl' || calendarPreference === 'both') && (
+            <div className="p-4 border rounded-lg bg-muted/50 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-sm font-medium">GHL Calendar for Appointments</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Select which GHL calendar AI agents should book appointments to
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    const calendars = await getCalendars();
+                    if (calendars) {
+                      setGhlCalendars(calendars);
+                      toast({
+                        title: "Calendars Refreshed",
+                        description: `Found ${calendars.length} GHL calendars`
+                      });
+                    }
+                  }}
+                  disabled={isLoading}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+              </div>
+              
+              {ghlCalendars.length > 0 ? (
+                <CalendarSelector
+                  value={ghlCalendarId}
+                  onValueChange={(id) => {
+                    setGhlCalendarId(id);
+                    const cal = ghlCalendars.find(c => c.id === id);
+                    setGhlCalendarName(cal?.name || '');
+                  }}
+                  calendars={ghlCalendars}
+                  placeholder="Select a GHL calendar..."
+                />
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <AlertTriangle className="h-4 w-4" />
+                  No GHL calendars found. Click Refresh to load calendars.
+                </div>
+              )}
+
+              {!ghlCalendarId && ghlCalendars.length > 0 && (
+                <div className="flex items-center gap-2 text-sm text-amber-600">
+                  <AlertTriangle className="h-4 w-4" />
+                  Please select a calendar to enable GHL appointment booking
+                </div>
+              )}
+
+              {/* Test GHL Calendar Button */}
+              {ghlCalendarId && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    setIsTestingCalendar(true);
+                    try {
+                      const result = await testCalendar(ghlCalendarId);
+                      if (result?.success) {
+                        toast({
+                          title: "GHL Calendar Connected!",
+                          description: `Calendar: ${result.details?.calendarName || 'Unknown'} | ${result.details?.upcomingEvents || 0} upcoming events`,
+                        });
+                      } else {
+                        toast({
+                          title: "Calendar Test Failed",
+                          description: result?.error || "Could not connect to GHL calendar",
+                          variant: "destructive"
+                        });
+                      }
+                    } catch (error: any) {
+                      toast({
+                        title: "Test Failed",
+                        description: error.message || "Failed to test calendar connection",
+                        variant: "destructive"
+                      });
+                    } finally {
+                      setIsTestingCalendar(false);
+                    }
+                  }}
+                  disabled={isTestingCalendar || isLoading}
+                  className="mt-2"
+                >
+                  {isTestingCalendar ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Testing...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="h-4 w-4 mr-2" />
+                      Test GHL Calendar Connection
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="fields" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="fields">Custom Fields</TabsTrigger>
+          <TabsTrigger value="tags">Tag Rules</TabsTrigger>
+          <TabsTrigger value="pipeline">Pipeline Stages</TabsTrigger>
+          <TabsTrigger value="opportunities">Opportunities</TabsTrigger>
+        </TabsList>
+
+        {/* Custom Fields Tab */}
+        <TabsContent value="fields" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Database className="h-5 w-5" />
+                    GHL Custom Fields
+                  </CardTitle>
+                  <CardDescription>
+                    Map your system fields to GHL custom fields. Found {ghlCustomFields.length} fields in your GHL account.
+                  </CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={handleAutoMatch} variant="outline" size="sm" disabled={isLoading}>
+                    <Wand2 className="h-4 w-4 mr-2" />
+                    Smart Match
+                  </Button>
+                  <Button onClick={loadData} variant="outline" size="sm" disabled={isLoading}>
+                    <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Mapping Status */}
+              <div className="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
+                <div>
+                  <div className="font-medium text-sm">Mapping Status</div>
+                  <div className="text-xs text-muted-foreground">
+                    {mappedFieldsCount} of {totalFieldsCount} fields mapped ({mappingPercentage}%)
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-primary transition-all" 
+                      style={{ width: `${mappingPercentage}%` }}
+                    />
+                  </div>
+                  {hasAutoMatched && (
+                    <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
+                      <Wand2 className="h-3 w-3 mr-1" />
+                      Auto-matched
+                    </Badge>
+                  )}
+                </div>
+              </div>
+
+              {/* Browsable GHL Custom Fields */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Your GHL Custom Fields ({ghlCustomFields.length} total)</Label>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAllFields(!showAllFields)}
+                    className="text-xs"
+                  >
+                    {showAllFields ? 'Hide All Fields' : 'Browse All Fields'}
+                    {showAllFields ? <ChevronDown className="h-3 w-3 ml-1" /> : <ChevronRight className="h-3 w-3 ml-1" />}
+                  </Button>
+                </div>
+                
+                {/* Quick preview badges */}
+                <div className="flex flex-wrap gap-2">
+                  {ghlCustomFields.slice(0, 8).map(field => (
+                    <Badge key={field.id} variant="outline" className="text-xs">
+                      {field.name} ({field.dataType})
+                    </Badge>
+                  ))}
+                  {ghlCustomFields.length > 8 && !showAllFields && (
+                    <Badge 
+                      variant="secondary" 
+                      className="text-xs cursor-pointer hover:bg-primary/20"
+                      onClick={() => setShowAllFields(true)}
+                    >
+                      +{ghlCustomFields.length - 8} more (click to browse)
+                    </Badge>
+                  )}
+                  {ghlCustomFields.length === 0 && (
+                    <span className="text-sm text-muted-foreground">No custom fields found</span>
+                  )}
+                </div>
+
+                {/* Full browsable list */}
+                {showAllFields && (
+                  <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
+                    <div className="flex items-center gap-2">
+                      <Search className="h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Search fields by name or key..."
+                        value={fieldSearchQuery}
+                        onChange={(e) => setFieldSearchQuery(e.target.value)}
+                        className="flex-1"
+                      />
+                    </div>
+                    <ScrollArea className="h-64">
+                      <div className="space-y-2 pr-4">
+                        {ghlCustomFields
+                          .filter(field => {
+                            if (!fieldSearchQuery) return true;
+                            const query = fieldSearchQuery.toLowerCase();
+                            return (
+                              field.name.toLowerCase().includes(query) ||
+                              (field.fieldKey && field.fieldKey.toLowerCase().includes(query)) ||
+                              field.dataType.toLowerCase().includes(query)
+                            );
+                          })
+                          .map(field => (
+                            <div 
+                              key={field.id} 
+                              className="flex items-center justify-between p-2 border rounded bg-background hover:bg-muted/50"
+                            >
+                              <div className="flex-1">
+                                <div className="font-medium text-sm">{field.name}</div>
+                                <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                  <span className="font-mono bg-muted px-1 rounded">{field.fieldKey || field.id}</span>
+                                  <Badge variant="outline" className="text-xs">{field.dataType}</Badge>
+                                </div>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-xs h-7"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(field.fieldKey || field.name);
+                                  toast({
+                                    title: "Copied!",
+                                    description: `Field key "${field.fieldKey || field.name}" copied to clipboard`,
+                                  });
+                                }}
+                              >
+                                Copy Key
+                              </Button>
+                            </div>
+                          ))}
+                        {ghlCustomFields.filter(field => {
+                          if (!fieldSearchQuery) return true;
+                          const query = fieldSearchQuery.toLowerCase();
+                          return (
+                            field.name.toLowerCase().includes(query) ||
+                            (field.fieldKey && field.fieldKey.toLowerCase().includes(query))
+                          );
+                        }).length === 0 && (
+                          <div className="text-center py-4 text-muted-foreground text-sm">
+                            No fields match your search
+                          </div>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                )}
+              </div>
+
+              {/* Create New Field */}
+              <div className="p-4 border rounded-lg bg-muted/50">
+                <Label className="text-sm font-medium">Create New GHL Field</Label>
+                <div className="flex gap-2 mt-2">
+                  <Input
+                    placeholder="Field name (e.g., last_call_outcome)"
+                    value={newFieldName}
+                    onChange={(e) => setNewFieldName(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Select value={newFieldType} onValueChange={setNewFieldType}>
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-popover">
+                      <SelectItem value="TEXT">Text</SelectItem>
+                      <SelectItem value="LARGE_TEXT">Large Text</SelectItem>
+                      <SelectItem value="NUMERICAL">Number</SelectItem>
+                      <SelectItem value="DATE">Date</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button onClick={handleCreateField} disabled={isLoading}>
+                    <Plus className="h-4 w-4 mr-1" />
+                    Create
+                  </Button>
+                </div>
+              </div>
+
+              {/* Field Mappings by Category */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Field Mappings</Label>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Type to search and filter fields. Click a category to expand/collapse.
+                </p>
+                
+                <ScrollArea className="h-96">
+                  <div className="space-y-3 pr-4">
+                    {Object.entries(SYSTEM_FIELDS).map(([categoryKey, category]) => (
+                      <Collapsible
+                        key={categoryKey}
+                        open={expandedCategories[categoryKey]}
+                        onOpenChange={() => toggleCategory(categoryKey)}
+                      >
+                        <CollapsibleTrigger asChild>
+                          <div className="flex items-center justify-between p-3 border rounded-lg cursor-pointer hover:bg-muted/50">
+                            <div className="flex items-center gap-2">
+                              {expandedCategories[categoryKey] ? (
+                                <ChevronDown className="h-4 w-4" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4" />
+                              )}
+                              <span className="font-medium">{category.label}</span>
+                              <Badge variant="secondary" className="text-xs">
+                                {category.fields.length} fields
+                              </Badge>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {category.fields.filter(f => fieldMappings[f.key] && fieldMappings[f.key] !== '_none_').length} mapped
+                            </div>
+                          </div>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="space-y-2 pt-2 pl-6">
+                          {category.fields.map(field => (
+                            <div key={field.key} className="flex items-center gap-3 p-3 border rounded-lg">
+                              <div className="flex-1">
+                                <div className="font-medium text-sm">{field.label}</div>
+                                <div className="text-xs text-muted-foreground">{field.description}</div>
+                              </div>
+                              <div className="w-64">
+                                <FieldSelector
+                                  value={fieldMappings[field.key] || '_none_'}
+                                  onValueChange={(value) => setFieldMappings(prev => ({
+                                    ...prev,
+                                    [field.key]: value
+                                  }))}
+                                  options={ghlCustomFields}
+                                  placeholder="Search & select..."
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tag Rules Tab */}
+        <TabsContent value="tags" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Tag className="h-5 w-5" />
+                Tag Automation Rules
+              </CardTitle>
+              <CardDescription>
+                Configure which tags are added to contacts based on call outcomes
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2 mb-4 p-3 bg-muted rounded-lg">
+                <Switch
+                  checked={removeConflictingTags}
+                  onCheckedChange={setRemoveConflictingTags}
+                />
+                <Label className="text-sm">
+                  Remove conflicting tags (e.g., remove "cold-lead" when adding "hot-lead")
+                </Label>
+              </div>
+
+              <ScrollArea className="h-96">
+                <div className="space-y-4 pr-4">
+                  {CALL_OUTCOMES.map((outcome) => {
+                    const isOpen = expandedTagOutcomes[outcome] ?? false;
+                    const tags = tagRules[outcome] || [];
+
+                    return (
+                      <Collapsible
+                        key={outcome}
+                        open={isOpen}
+                        onOpenChange={(open) =>
+                          setExpandedTagOutcomes((prev) => ({ ...prev, [outcome]: open }))
+                        }
+                      >
+                        <div className="border rounded-lg bg-card">
+                          <CollapsibleTrigger asChild>
+                            <button
+                              type="button"
+                              className="w-full p-4 flex items-start justify-between gap-4 text-left hover:bg-accent/40 transition-colors"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium capitalize">
+                                    {outcome.replace(/_/g, ' ')}
+                                  </span>
+                                  <Badge variant="secondary" className="text-xs">
+                                    {tags.length}
+                                  </Badge>
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Tags to add when call outcome is "{outcome}"
+                                </p>
+
+                                {!isOpen && tags.length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5 mt-2">
+                                    {tags.slice(0, 4).map((tag, index) => (
+                                      <Badge key={index} variant="secondary" className="text-xs">
+                                        {tag}
+                                      </Badge>
+                                    ))}
+                                    {tags.length > 4 && (
+                                      <span className="text-xs text-muted-foreground">
+                                        +{tags.length - 4} more
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {!isOpen && tags.length === 0 && (
+                                  <p className="text-xs text-muted-foreground mt-2">
+                                    No tags configured
+                                  </p>
+                                )}
+                              </div>
+
+                              {isOpen ? (
+                                <ChevronDown className="h-4 w-4 text-muted-foreground mt-0.5" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4 text-muted-foreground mt-0.5" />
+                              )}
+                            </button>
+                          </CollapsibleTrigger>
+
+                          <CollapsibleContent className="border-t px-4 pb-4 pt-4">
+                            <div className="flex flex-wrap gap-2 mb-3">
+                              {tags.map((tag, index) => (
+                                <Badge key={index} variant="secondary" className="gap-1">
+                                  {tag}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTag(outcome, index)}
+                                    className="ml-1 hover:text-destructive"
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </Badge>
+                              ))}
+                              {tags.length === 0 && (
+                                <span className="text-xs text-muted-foreground">
+                                  No tags configured
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex gap-2">
+                              <Input
+                                placeholder="Add tag..."
+                                value={newTagInput[outcome] || ''}
+                                onChange={(e) =>
+                                  setNewTagInput((prev) => ({
+                                    ...prev,
+                                    [outcome]: e.target.value
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleAddTag(outcome);
+                                  }
+                                }}
+                                className="flex-1"
+                              />
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddTag(outcome)}
+                              >
+                                <Plus className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </CollapsibleContent>
+                        </div>
+                      </Collapsible>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Pipeline Stages Tab */}
+        <TabsContent value="pipeline" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <GitBranch className="h-5 w-5" />
+                Pipeline Stage Automation
+              </CardTitle>
+              <CardDescription>
+                Automatically move contacts to specific pipeline stages based on call outcomes
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Default Pipeline Selection */}
+              <div className="p-4 border rounded-lg bg-muted/50">
+                <Label className="text-sm font-medium">Default Pipeline</Label>
+                <p className="text-xs text-muted-foreground mb-2">
+                  Select which pipeline to use for stage automations
+                </p>
+                <Select value={defaultPipelineId || '_none_'} onValueChange={(v) => setDefaultPipelineId(v === '_none_' ? '' : v)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a pipeline..." />
+                  </SelectTrigger>
+                  <SelectContent className="bg-popover">
+                    <SelectItem value="_none_">No pipeline selected</SelectItem>
+                    {pipelines.map(pipeline => (
+                      <SelectItem key={pipeline.id} value={pipeline.id}>
+                        {pipeline.name} ({pipeline.stages?.length || 0} stages)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Stage Mappings */}
+              {defaultPipelineId && selectedPipeline && (
+                <div className="space-y-4">
+                  <Label className="text-sm font-medium">Outcome to Stage Mappings</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Type to search stages. Select which stage to move contacts to after each outcome.
+                  </p>
+                  <ScrollArea className="h-80">
+                    <div className="space-y-3 pr-4">
+                      {CALL_OUTCOMES.map(outcome => (
+                        <div key={outcome} className="flex items-center gap-3 p-3 border rounded-lg">
+                          <div className="flex-1">
+                            <div className="font-medium text-sm capitalize">{outcome.replace(/_/g, ' ')}</div>
+                          </div>
+                          <div className="w-64">
+                            <StageSelector
+                              value={pipelineMappings[outcome] || '_none_'}
+                              onValueChange={(value) => setPipelineMappings(prev => ({
+                                ...prev,
+                                [outcome]: value
+                              }))}
+                              stages={selectedPipeline.stages || []}
+                              placeholder="Search stages..."
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )}
+
+              {!defaultPipelineId && (
+                <div className="text-center py-8 text-muted-foreground">
+                  <GitBranch className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                  <p>Select a default pipeline above to configure stage mappings</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Opportunities Tab */}
+        <TabsContent value="opportunities" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5" />
+                Opportunity Settings
+              </CardTitle>
+              <CardDescription>
+                Configure automatic opportunity creation for qualified leads
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between p-4 border rounded-lg">
+                <div className="space-y-1">
+                  <Label className="font-medium">Auto-Create Opportunities</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Automatically create opportunities for positive call outcomes
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Badge variant={autoCreateOpportunities ? "default" : "secondary"}>
+                    {autoCreateOpportunities ? "Enabled" : "Disabled"}
+                  </Badge>
+                  <Switch
+                    checked={autoCreateOpportunities}
+                    onCheckedChange={setAutoCreateOpportunities}
+                  />
+                </div>
+              </div>
+
+              {autoCreateOpportunities && (
+                <div className="space-y-4 p-4 border rounded-lg bg-muted/50">
+                  <div>
+                    <Label>Default Opportunity Value ($)</Label>
+                    <Input
+                      type="number"
+                      value={defaultOpportunityValue}
+                      onChange={(e) => setDefaultOpportunityValue(parseFloat(e.target.value) || 0)}
+                      placeholder="0"
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Default monetary value for auto-created opportunities
+                    </p>
+                  </div>
+
+                  <div>
+                    <Label>Opportunity Pipeline</Label>
+                    <Select value={defaultPipelineId || '_none_'} onValueChange={(v) => setDefaultPipelineId(v === '_none_' ? '' : v)}>
+                      <SelectTrigger className="mt-1">
+                        <SelectValue placeholder="Select pipeline..." />
+                      </SelectTrigger>
+                      <SelectContent className="bg-popover">
+                        <SelectItem value="_none_">No pipeline selected</SelectItem>
+                        {pipelines.map(pipeline => (
+                          <SelectItem key={pipeline.id} value={pipeline.id}>
+                            {pipeline.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Pipeline where new opportunities will be created
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {/* Save Button */}
+      <div className="flex justify-end">
+        <Button onClick={handleSaveSettings} disabled={isLoading} size="lg">
+          <Check className="h-4 w-4 mr-2" />
+          Save All Settings
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+export default GHLFieldMappingTab;

@@ -1,0 +1,641 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+// Default webhook URL for Retell call events (handles transcript analysis, disposition routing, workflows)
+const DEFAULT_WEBHOOK_URL = 'https://emonjusymdripmkvtttc.supabase.co/functions/v1/retell-call-webhook';
+
+// Calendar integration function URL
+const CALENDAR_FUNCTION_URL = 'https://emonjusymdripmkvtttc.supabase.co/functions/v1/calendar-integration';
+
+interface RetellAgentRequest {
+  action: 'create' | 'list' | 'update' | 'delete' | 'get' | 'get_agent' | 'preview_voice' | 'configure_calendar' | 'test_chat' | 'get_llm' | 'update_voicemail_settings' | 'get_voicemail_settings';
+  agentName?: string;
+  agentId?: string;
+  voiceId?: string;
+  llmId?: string;
+  agentConfig?: any;
+  text?: string; // For voice preview
+  message?: string; // For test chat
+  webhookUrl?: string; // Optional custom webhook URL
+  userId?: string; // User ID for calendar configuration
+  voicemailDetection?: {
+    enabled: boolean;
+    provider?: 'twilio' | 'retell';
+    detection_timeout_ms?: number;
+    machine_detection_speech_threshold?: number;
+    machine_detection_speech_end_threshold?: number;
+    machine_detection_silence_timeout?: number;
+  };
+}
+
+serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const { action, agentName, agentId, voiceId, llmId, agentConfig, text, message, webhookUrl, userId }: RetellAgentRequest = await req.json();
+
+    const apiKey = Deno.env.get('RETELL_AI_API_KEY');
+    if (!apiKey) {
+      throw new Error('RETELL_AI_API_KEY is not configured');
+    }
+
+    // Create Supabase client for calendar timezone lookup
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey);
+
+    console.log(`[Retell Agent] Processing ${action} request`);
+
+    const baseUrl = 'https://api.retellai.com';
+    const headers = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    };
+
+    let response;
+
+    switch (action) {
+      case 'create':
+        if (!agentName) {
+          throw new Error('Agent name is required for creation');
+        }
+        if (!llmId) {
+          throw new Error('LLM ID is required for creation');
+        }
+        
+        const createPayload = {
+          agent_name: agentName,
+          voice_id: voiceId || '11labs-Adrian',
+          response_engine: {
+            type: 'retell-llm',
+            llm_id: llmId
+          },
+          // Auto-configure webhook URL for call tracking
+          webhook_url: webhookUrl || DEFAULT_WEBHOOK_URL,
+          // Give time for dynamic variable injection on inbound calls
+          begin_message_delay_ms: 2500,
+        };
+        
+        console.log('[Retell Agent] Creating agent with payload:', JSON.stringify(createPayload));
+        
+        response = await fetch(`${baseUrl}/create-agent`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(createPayload),
+        });
+        break;
+
+      case 'list':
+        response = await fetch(`${baseUrl}/list-agents`, {
+          method: 'GET',
+          headers,
+        });
+        break;
+
+      case 'get':
+      case 'get_agent':
+        if (!agentId) {
+          throw new Error('Agent ID is required for get');
+        }
+        
+        response = await fetch(`${baseUrl}/get-agent/${agentId}`, {
+          method: 'GET',
+          headers,
+        });
+        break;
+
+      case 'update':
+        if (!agentId) {
+          throw new Error('Agent ID is required for update');
+        }
+        
+        // Use agentConfig if provided (full update), otherwise use individual fields
+        const updateData: any = agentConfig || {};
+        
+        // If no agentConfig provided, build from individual fields
+        if (!agentConfig) {
+          if (agentName) updateData.agent_name = agentName;
+          if (voiceId) updateData.voice_id = voiceId;
+          if (llmId) {
+            updateData.response_engine = {
+              type: 'retell-llm',
+              llm_id: llmId
+            };
+          }
+        }
+        
+        console.log(`[Retell Agent] Updating agent ${agentId} with:`, JSON.stringify(updateData));
+        
+        response = await fetch(`${baseUrl}/update-agent/${agentId}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(updateData),
+        });
+        break;
+
+      case 'delete':
+        if (!agentId) {
+          throw new Error('Agent ID is required for delete');
+        }
+        
+        response = await fetch(`${baseUrl}/delete-agent/${agentId}`, {
+          method: 'DELETE',
+          headers,
+        });
+        break;
+
+      case 'preview_voice':
+        if (!voiceId) {
+          throw new Error('Voice ID is required for preview');
+        }
+        
+        const previewText = text || 'Hello! This is a preview of how I sound. I can help you with various tasks and have natural conversations.';
+        
+        // Retell doesn't have a direct voice preview API, so we return voice info
+        // The frontend should use pre-recorded samples or ElevenLabs directly
+        return new Response(JSON.stringify({ 
+          success: true,
+          voiceId: voiceId,
+          message: 'Voice preview requested. Use the voice samples in the UI for preview.',
+          sampleText: previewText
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+
+      case 'configure_calendar':
+        if (!agentId) {
+          throw new Error('Agent ID is required for calendar configuration');
+        }
+        if (!userId) {
+          throw new Error('User ID is required for calendar configuration');
+        }
+        
+        console.log(`[Retell Agent] Configuring calendar function for agent ${agentId} with user ${userId}`);
+        
+        // First, get the current agent to find the LLM ID
+        const getAgentResp = await fetch(`${baseUrl}/get-agent/${agentId}`, {
+          method: 'GET',
+          headers,
+        });
+        
+        if (!getAgentResp.ok) {
+          const errorText = await getAgentResp.text();
+          throw new Error(`Failed to get agent: ${errorText}`);
+        }
+        
+        const currentAgent = await getAgentResp.json();
+        console.log(`[Retell Agent] Current agent config:`, JSON.stringify(currentAgent));
+        
+        // Get the LLM ID from the agent
+        const agentLlmId =
+          currentAgent?.response_engine?.llm_id ||
+          currentAgent?.response_engine?.llmId ||
+          currentAgent?.llm_id;
+        
+        if (!agentLlmId) {
+          throw new Error('Could not determine LLM ID from agent config. Make sure the agent uses a Retell LLM.');
+        }
+        
+        console.log(`[Retell Agent] Agent uses LLM: ${agentLlmId}`);
+        
+        // Get user's timezone for the instructions
+        const { data: availability } = await supabaseClient
+          .from('calendar_availability')
+          .select('timezone')
+          .eq('user_id', userId)
+          .maybeSingle();
+        
+        const userTimezone = availability?.timezone || 'America/New_York';
+        
+        // Build the calendar function configuration for LLM general_tools
+        // CRITICAL: This MUST be added to the LLM's general_tools, NOT the agent's functions
+        // EMBED user_id directly in the URL so the model doesn't need to remember it
+        const calendarToolUrl = `${CALENDAR_FUNCTION_URL}?user_id=${userId}`;
+        
+        const calendarTool = {
+          type: "custom",
+          name: "manage_calendar",
+          description: "REQUIRED: You MUST call this function before answering ANY question about time, date, or availability. Do NOT guess or assume - always call this first. The function returns current_time and available_slots.",
+          url: calendarToolUrl,
+          parameters: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: [
+                  "get_available_slots",
+                  "book_appointment",
+                  "cancel_appointment",
+                  "list_appointments",
+                  "reschedule_appointment"
+                ],
+                description: "The calendar action to perform. Use get_available_slots for ANY time/availability question. Use list_appointments to see the caller's booked appointments."
+              },
+              date: {
+                type: "string",
+                description: "Date in YYYY-MM-DD format (optional, defaults to today)"
+              },
+              time: {
+                type: "string",
+                description: "Time in HH:MM format (24-hour) or natural language like 'noon' - required for booking/rescheduling"
+              },
+              new_date: {
+                type: "string",
+                description: "New date for reschedule (YYYY-MM-DD)"
+              },
+              new_time: {
+                type: "string",
+                description: "New time for reschedule (HH:MM or natural language)"
+              },
+              duration_minutes: {
+                type: "number",
+                description: "Meeting duration in minutes (default 30)"
+              },
+              attendee_name: {
+                type: "string",
+                description: "Name of the person booking"
+              },
+              attendee_email: {
+                type: "string",
+                description: "Email of the person booking (optional)"
+              },
+              attendee_phone: {
+                type: "string",
+                description: "Phone number of the person booking"
+              },
+              title: {
+                type: "string",
+                description: "Meeting title/subject"
+              },
+              cancel_all: {
+                type: "boolean",
+                description: "Set to true to cancel ALL upcoming appointments for this caller"
+              },
+              title_contains: {
+                type: "string",
+                description: "Partial name match for cancellation - use when caller says 'cancel the one with [name]' or 'cancel my appointment with [name]'"
+              }
+            },
+            required: ["action"]
+          },
+          speak_during_execution: false,
+          speak_after_execution: true
+        };
+        
+        console.log(`[Retell Agent] Calendar tool URL: ${calendarToolUrl}`);
+        
+        // Get current LLM config
+        const llmGetResp = await fetch(`${baseUrl}/get-retell-llm/${agentLlmId}`, {
+          method: 'GET',
+          headers,
+        });
+        
+        if (!llmGetResp.ok) {
+          const errorText = await llmGetResp.text();
+          throw new Error(`Failed to get LLM config: ${errorText}`);
+        }
+        
+        const llm = await llmGetResp.json();
+        console.log(`[Retell Agent] Current LLM config:`, JSON.stringify(llm));
+        
+        // Get existing general_tools and add/replace the calendar tool
+        let existingTools = llm.general_tools || [];
+        
+        // Remove any existing calendar tool
+        existingTools = existingTools.filter((t: any) => t.name !== 'manage_calendar');
+        
+        // Add the new calendar tool
+        existingTools.push(calendarTool);
+        
+        console.log(`[Retell Agent] Updating LLM with ${existingTools.length} general_tools`);
+        
+        // CRITICAL: Preserve the existing prompt and ONLY append/update calendar rules
+        const currentPrompt = String(llm?.general_prompt || '');
+        const originalPromptLength = currentPrompt.length;
+        
+        console.log(`[Retell Agent] Original prompt length: ${originalPromptLength} chars`);
+        
+        const markerStart = '[CALENDAR_TOOLING_v2]';
+        const oldMarkerStart = '[CALENDAR_TOOLING_v1]';
+
+        // Remove old versions if present - use non-greedy matching to be safe
+        let basePrompt = currentPrompt
+          .replace(new RegExp(`\\n*${oldMarkerStart.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?\\[/CALENDAR_TOOLING_v1\\]\\n*`, 'g'), '')
+          .replace(new RegExp(`\\n*${markerStart.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?\\[/CALENDAR_TOOLING_v2\\]\\n*`, 'g'), '')
+          .trim();
+        
+        console.log(`[Retell Agent] Base prompt after removing old calendar blocks: ${basePrompt.length} chars`);
+        
+        // Safety check: if somehow base prompt is way shorter, something went wrong
+        // The calendar block is typically ~1500 chars, so allow for that margin
+        if (originalPromptLength > 500 && basePrompt.length < originalPromptLength * 0.3) {
+          console.error(`[Retell Agent] WARNING: Prompt shrunk dramatically! Original: ${originalPromptLength}, After: ${basePrompt.length}`);
+          // Use original prompt without any replacements as a safety fallback
+          basePrompt = currentPrompt;
+          console.log(`[Retell Agent] Using original prompt as fallback`);
+        }
+
+        const calendarToolingBlock = [
+          '',
+          markerStart,
+          '=== MANDATORY CALENDAR RULES (YOU MUST FOLLOW THESE) ===',
+          '',
+          'RULE #1 - NEVER GUESS TIME OR AVAILABILITY:',
+          '- You do NOT know what time it is until you call manage_calendar.',
+          '- You do NOT know what times are available until you call manage_calendar.',
+          '- If you guess or assume, you WILL be wrong. Always call the function FIRST.',
+          '',
+          'RULE #2 - CALL manage_calendar FOR ANY TIME/DATE/AVAILABILITY QUESTION:',
+          '- "What time is it?" → Call manage_calendar(action="get_available_slots") FIRST, then read current_time from response.',
+          '- "Do you have availability?" → Call manage_calendar(action="get_available_slots") FIRST, then read available_slots from response.',
+          '- "Can I book tomorrow at 3pm?" → Call manage_calendar(action="get_available_slots") FIRST, check if 3pm is in available_slots.',
+          '',
+          'RULE #3 - USE THE FUNCTION RESPONSE:',
+          '- current_time: This is the ACTUAL current date and time. Use it to answer time questions.',
+          '- available_slots: This is the list of ACTUAL available times. Only offer these times.',
+          '- If available_slots is empty, say "I don\'t have any openings in the next few days. Would you like to check a different week?"',
+          '- NEVER say "no availability" unless available_slots returned empty.',
+          '',
+          'RULE #4 - WAIT FOR FUNCTION RESULTS:',
+          '- Do NOT speak while the function is executing.',
+          '- Do NOT guess what the results will be.',
+          '- Wait for the function to return, then use those results to respond.',
+          '',
+          `TIMEZONE: ${userTimezone}`,
+          '',
+          'BOOKING FLOW:',
+          '1. Call manage_calendar(action="get_available_slots")',
+          '2. Read current_time and available_slots from response',
+          '3. Present 2-3 options from available_slots',
+          '4. User picks a time',
+          '5. Call manage_calendar(action="book_appointment", time="HH:MM" or natural like "noon", attendee_name="...", attendee_phone="...")',
+          '6. Confirm booking with full details',
+          '',
+        'CANCEL / RESCHEDULE FLOW:',
+          '- To see what appointments the caller has: manage_calendar(action="list_appointments")',
+          '- "Cancel all my appointments" or "Cancel them all" → manage_calendar(action="cancel_appointment", cancel_all=true)',
+          '- "Cancel the one with [name]" → manage_calendar(action="cancel_appointment", title_contains="[name]")',
+          '- "Cancel my next appointment" or just "Cancel it" → manage_calendar(action="cancel_appointment") — cancels the soonest upcoming',
+          '- To reschedule: manage_calendar(action="reschedule_appointment", new_time="HH:MM") — the system finds the next appointment for this caller.',
+          '- If the caller asks "do I have any appointments?", call list_appointments FIRST, then read the response.',
+          '- IMPORTANT: Do NOT ask for appointment IDs. Use cancel_all=true for all, title_contains for specific names, or just call cancel_appointment to cancel the next one.',
+          '',
+          '=== END CALENDAR RULES ===',
+          '[/CALENDAR_TOOLING_v2]',
+        ].join('\n');
+
+        // Append calendar block to the preserved base prompt
+        const updatedPrompt = `${basePrompt}\n${calendarToolingBlock}`.trim();
+        
+        console.log(`[Retell Agent] Final prompt length: ${updatedPrompt.length} chars (base: ${basePrompt.length} + calendar block)`);
+        
+        // Update the LLM with both the tool AND the prompt
+        const llmUpdateResp = await fetch(`${baseUrl}/update-retell-llm/${agentLlmId}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({
+            general_tools: existingTools,
+            general_prompt: updatedPrompt
+          }),
+        });
+        
+        if (!llmUpdateResp.ok) {
+          const errorText = await llmUpdateResp.text();
+          console.error(`[Retell Agent] Failed to update LLM with calendar tool: ${errorText}`);
+          throw new Error(`Failed to configure calendar on LLM: ${errorText}`);
+        }
+        
+        const updatedLlm = await llmUpdateResp.json();
+        console.log(`[Retell Agent] Successfully configured calendar tool on LLM ${agentLlmId}`);
+        console.log(`[Retell Agent] LLM now has ${updatedLlm.general_tools?.length || 0} general_tools`);
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: 'Calendar function configured successfully on LLM',
+            llmId: agentLlmId,
+            agentId: agentId,
+            userId: userId,
+            toolsCount: updatedLlm.general_tools?.length || 0,
+            llmPromptUpdated: true,
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        );
+
+      case 'test_chat':
+        if (!agentId) {
+          throw new Error('Agent ID is required for test chat');
+        }
+        if (!message) {
+          throw new Error('Message is required for test chat');
+        }
+        
+        console.log(`[Retell Agent] Testing chat with agent ${agentId}: ${message}`);
+        
+        // Use Retell's test conversation endpoint
+        const testResponse = await fetch(`${baseUrl}/v2/create-web-call`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            agent_id: agentId,
+            metadata: { test_mode: true }
+          }),
+        });
+        
+        if (!testResponse.ok) {
+          const errorText = await testResponse.text();
+          console.error(`[Retell Agent] Test chat failed: ${errorText}`);
+          // Return a helpful message instead of failing
+          return new Response(JSON.stringify({ 
+            success: false,
+            response: `To test this agent, use the Test Call feature with a real phone number, or test directly in the Retell AI dashboard. Message: "${message}"`,
+            error: errorText
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        
+        const testData = await testResponse.json();
+        return new Response(JSON.stringify({ 
+          success: true,
+          response: `Web call created for testing. Call ID: ${testData.call_id || 'N/A'}. Use the Retell dashboard or make a real test call to interact with the agent.`,
+          callData: testData
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+
+      case 'get_llm':
+        if (!llmId) {
+          throw new Error('LLM ID is required');
+        }
+        
+        console.log(`[Retell Agent] Fetching LLM: ${llmId}`);
+        
+        response = await fetch(`${baseUrl}/get-retell-llm/${llmId}`, {
+          method: 'GET',
+          headers,
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[Retell Agent] Get LLM failed: ${errorText}`);
+          throw new Error(`Failed to get LLM: ${errorText}`);
+        }
+        
+        const llmData = await response.json();
+        console.log(`[Retell Agent] LLM fetched successfully`);
+        
+        return new Response(JSON.stringify(llmData), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+
+      // ============= VOICEMAIL DETECTION SETTINGS =============
+      case 'get_voicemail_settings':
+        if (!agentId) {
+          throw new Error('Agent ID is required');
+        }
+        
+        console.log(`[Retell Agent] Getting voicemail settings for agent ${agentId}`);
+        
+        const getVmAgentResp = await fetch(`${baseUrl}/get-agent/${agentId}`, {
+          method: 'GET',
+          headers,
+        });
+        
+        if (!getVmAgentResp.ok) {
+          const errorText = await getVmAgentResp.text();
+          throw new Error(`Failed to get agent: ${errorText}`);
+        }
+        
+        const vmAgent = await getVmAgentResp.json();
+        
+        return new Response(JSON.stringify({
+          success: true,
+          agentId,
+          voicemail_detection: vmAgent.voicemail_detection || null,
+          ambient_sound_volume: vmAgent.ambient_sound_volume,
+          end_call_after_silence_ms: vmAgent.end_call_after_silence_ms,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+
+      case 'update_voicemail_settings':
+        if (!agentId) {
+          throw new Error('Agent ID is required');
+        }
+        
+        const { voicemailDetection } = await req.clone().json();
+        
+        console.log(`[Retell Agent] Updating voicemail settings for agent ${agentId}:`, JSON.stringify(voicemailDetection));
+        
+        // Build the update payload
+        // Retell supports two providers:
+        // 1. Retell built-in: Uses voicemail_detection_timeout_ms and optionally voicemail_message
+        // 2. Twilio AMD: Uses provider: 'twilio' with machine detection parameters
+        
+        const vmUpdatePayload: any = {};
+        
+        if (voicemailDetection?.enabled) {
+          const vmConfig: any = {};
+          
+          if (voicemailDetection.provider === 'twilio_amd') {
+            // Twilio AMD configuration
+            // Note: This configures Retell to use Twilio's AMD when calls come through Twilio SIP
+            vmConfig.provider = 'twilio';
+            vmConfig.voicemail_detection_timeout_ms = voicemailDetection.detection_timeout_ms || 30000;
+            vmConfig.machine_detection_speech_threshold = voicemailDetection.machine_detection_speech_threshold || 2500;
+            vmConfig.machine_detection_speech_end_threshold = voicemailDetection.machine_detection_speech_end_threshold || 1200;
+            vmConfig.machine_detection_silence_timeout = voicemailDetection.machine_detection_silence_timeout || 5000;
+            
+            console.log(`[Retell Agent] Configuring Twilio AMD with thresholds:`, vmConfig);
+          } else {
+            // Retell built-in detection
+            vmConfig.voicemail_detection_timeout_ms = voicemailDetection.detection_timeout_ms || 30000;
+            
+            // If behavior is 'leave_message' and a message is provided, include it
+            // If no voicemail_message is set, Retell hangs up by default
+            if (voicemailDetection.behavior === 'leave_message' && voicemailDetection.voicemail_message) {
+              vmConfig.voicemail_message = voicemailDetection.voicemail_message;
+            }
+            
+            console.log(`[Retell Agent] Configuring Retell built-in detection:`, vmConfig);
+          }
+          
+          vmUpdatePayload.voicemail_detection = vmConfig;
+        } else {
+          // Disable voicemail detection by setting to null
+          vmUpdatePayload.voicemail_detection = null;
+        }
+        
+        console.log(`[Retell Agent] Sending voicemail update:`, JSON.stringify(vmUpdatePayload));
+        
+        const vmUpdateResp = await fetch(`${baseUrl}/update-agent/${agentId}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(vmUpdatePayload),
+        });
+        
+        if (!vmUpdateResp.ok) {
+          const errorText = await vmUpdateResp.text();
+          console.error(`[Retell Agent] Voicemail settings update failed: ${errorText}`);
+          throw new Error(`Failed to update voicemail settings: ${errorText}`);
+        }
+        
+        const updatedVmAgent = await vmUpdateResp.json();
+        console.log(`[Retell Agent] Voicemail settings updated successfully for agent ${agentId}`);
+        
+        let behaviorDescription = '';
+        if (voicemailDetection?.provider === 'twilio_amd') {
+          behaviorDescription = 'Using Twilio AMD for fast voicemail detection (2-3 seconds)';
+        } else if (voicemailDetection?.behavior === 'leave_message') {
+          behaviorDescription = 'Agent will leave a voicemail message when detected';
+        } else {
+          behaviorDescription = 'Calls will hang up within 3-5 seconds when voicemail is detected';
+        }
+        
+        return new Response(JSON.stringify({
+          success: true,
+          agentId,
+          voicemail_detection: updatedVmAgent.voicemail_detection,
+          message: voicemailDetection?.enabled 
+            ? behaviorDescription
+            : 'Voicemail detection disabled',
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+
+      default:
+        throw new Error(`Unsupported action: ${action}`);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Retell Agent] API error - Status: ${response.status}, Body: ${errorText}`);
+      throw new Error(`Retell AI API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = action === 'delete' ? { success: true } : await response.json();
+    console.log(`[Retell Agent] Success - Response:`, JSON.stringify(data));
+
+    return new Response(JSON.stringify(data), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    console.error('[Retell Agent] Error:', error);
+    return new Response(JSON.stringify({ error: (error as Error).message }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+});
