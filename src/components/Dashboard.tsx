@@ -6,6 +6,7 @@ import { RotateCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSearchParams } from 'react-router-dom';
 import { Skeleton } from '@/components/ui/skeleton';
+import { FeatureGate } from '@/components/FeatureGate';
 
 // Eagerly loaded - needed for Overview tab (most common entry point)
 import TabErrorBoundary from '@/components/TabErrorBoundary';
@@ -377,19 +378,49 @@ const Dashboard = () => {
       case 'leads':
         return <TabErrorBoundary tabName="Leads"><Suspense fallback={<TabLoader />}><EnhancedLeadManager /></Suspense></TabErrorBoundary>;
       case 'pipeline':
-        return <TabErrorBoundary tabName="Pipeline"><Suspense fallback={<TabLoader />}><PipelineKanban /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Pipeline">
+            <FeatureGate feature="pipeline_sync">
+              <Suspense fallback={<TabLoader />}><PipelineKanban /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'predictive':
-        return <TabErrorBoundary tabName="Predictive Dialing"><Suspense fallback={<TabLoader />}><PredictiveDialingDashboard /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Predictive Dialing">
+            <FeatureGate feature="predictive_pacing">
+              <Suspense fallback={<TabLoader />}><PredictiveDialingDashboard /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'retell':
-        return <TabErrorBoundary tabName="Retell AI"><Suspense fallback={<TabLoader />}><RetellAIManager /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Retell AI">
+            <FeatureGate feature="retell_integration">
+              <Suspense fallback={<TabLoader />}><RetellAIManager /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'workflows':
-        return <TabErrorBoundary tabName="Workflows"><Suspense fallback={<TabLoader />}><WorkflowBuilder /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Workflows">
+            <FeatureGate feature="workflow_triggers">
+              <Suspense fallback={<TabLoader />}><WorkflowBuilder /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'lead-upload':
         return <TabErrorBoundary tabName="Lead Upload"><Suspense fallback={<TabLoader />}><LeadUpload /></Suspense></TabErrorBoundary>;
       case 'analytics':
         return <TabErrorBoundary tabName="Analytics"><Suspense fallback={<TabLoader />}><CallAnalytics numbers={numbers} /></Suspense></TabErrorBoundary>;
       case 'ai-engine':
-        return <TabErrorBoundary tabName="AI Engine"><Suspense fallback={<TabLoader />}><AIDecisionEngine numbers={numbers} onRefreshNumbers={refreshNumbers} /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="AI Engine">
+            <FeatureGate feature="ai_dialing">
+              <Suspense fallback={<TabLoader />}><AIDecisionEngine numbers={numbers} onRefreshNumbers={refreshNumbers} /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'rotation':
         return <TabErrorBoundary tabName="Rotation"><Suspense fallback={<TabLoader />}><NumberRotationManager numbers={numbers} onRefreshNumbers={refreshNumbers} /></Suspense></TabErrorBoundary>;
       case 'spam':
@@ -401,15 +432,39 @@ const Dashboard = () => {
       case 'automation':
         return <TabErrorBoundary tabName="Automation"><Suspense fallback={<TabLoader />}><CampaignAutomation /></Suspense></TabErrorBoundary>;
       case 'dispositions':
-        return <TabErrorBoundary tabName="Dispositions"><Suspense fallback={<TabLoader />}><DispositionAutomationManager /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Dispositions">
+            <FeatureGate feature="disposition_automation">
+              <Suspense fallback={<TabLoader />}><DispositionAutomationManager /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'ai-manager':
-        return <TabErrorBoundary tabName="AI Manager"><Suspense fallback={<TabLoader />}><AIPipelineManager /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="AI Manager">
+            <FeatureGate feature="ai_pipeline_manager">
+              <Suspense fallback={<TabLoader />}><AIPipelineManager /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'follow-ups':
-        return <TabErrorBoundary tabName="Follow-ups"><Suspense fallback={<TabLoader />}><FollowUpScheduler /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Follow-ups">
+            <FeatureGate feature="callback_scheduling">
+              <Suspense fallback={<TabLoader />}><FollowUpScheduler /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'agent-activity':
         return <TabErrorBoundary tabName="Agent Activity"><Suspense fallback={<TabLoader />}><AgentActivityDashboard /></Suspense></TabErrorBoundary>;
       case 'ai-workflows':
-        return <TabErrorBoundary tabName="AI Workflows"><Suspense fallback={<TabLoader />}><AIWorkflowGenerator /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="AI Workflows">
+            <FeatureGate feature="ai_dialing">
+              <Suspense fallback={<TabLoader />}><AIWorkflowGenerator /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       case 'reachability':
         return <TabErrorBoundary tabName="Reachability"><Suspense fallback={<TabLoader />}><ReachabilityDashboard /></Suspense></TabErrorBoundary>;
       case 'campaign-results':
@@ -431,7 +486,13 @@ const Dashboard = () => {
       case 'calendar':
         return <TabErrorBoundary tabName="Calendar"><Suspense fallback={<TabLoader />}><CalendarIntegrationManager /></Suspense></TabErrorBoundary>;
       case 'autonomous-agent':
-        return <TabErrorBoundary tabName="Autonomous Agent"><Suspense fallback={<TabLoader />}><AutonomousAgentDashboard /></Suspense></TabErrorBoundary>;
+        return (
+          <TabErrorBoundary tabName="Autonomous Agent">
+            <FeatureGate feature="autonomous_mode">
+              <Suspense fallback={<TabLoader />}><AutonomousAgentDashboard /></Suspense>
+            </FeatureGate>
+          </TabErrorBoundary>
+        );
       default:
         return <div className="text-muted-foreground">Select a section from the sidebar</div>;
     }
