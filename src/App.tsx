@@ -27,6 +27,7 @@ const AiSmsConversations = lazy(() => import("./components/AiSmsConversations"))
 const NumberWebhooks = lazy(() => import("./pages/NumberWebhooks"));
 const InstallApp = lazy(() => import("./pages/InstallApp"));
 const SystemTestingHub = lazy(() => import("./pages/SystemTestingHub"));
+const GHLDemo = lazy(() => import("./pages/GHLDemo"));
 
 // Non-lazy loaded global components (needed immediately)
 import AIAssistantChat from "./components/AIAssistantChat";
@@ -90,6 +91,10 @@ const App = () => (
                             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
                             <Route path="/install" element={<ProtectedRoute><InstallApp /></ProtectedRoute>} />
                             <Route path="/system-testing" element={<ProtectedRoute><SystemTestingHub /></ProtectedRoute>} />
+                            
+                            {/* GHL Demo - Moses demo page */}
+                            <Route path="/ghl" element={<ProtectedRoute><GHLDemo /></ProtectedRoute>} />
+                            <Route path="/ghl-demo" element={<ProtectedRoute><GHLDemo /></ProtectedRoute>} />
                             
                             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                             <Route path="*" element={<NotFound />} />
